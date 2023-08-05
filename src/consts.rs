@@ -1,0 +1,5 @@
+pub const NETCODE_VERSION_BYTES_LEN: usize = 13;
+pub const NETCODE_VERSION_BYTES: &[u8; NETCODE_VERSION_BYTES_LEN] = b"NETCODE 1.01\0";
+pub const SERVER_SOCKET_RECV_BUF_SIZE: usize = 4 * 1024 * 1024;
+pub const SERVER_SOCKET_SEND_BUF_SIZE: usize = 4 * 1024 * 1024;
+pub const PRIVATE_KEY_BYTES: usize = 32;
