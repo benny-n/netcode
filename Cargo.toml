@@ -1,13 +1,13 @@
 [package]
-name = "netcode-rs"
+name = "netcode"
 version = "0.1.0"
 edition = "2021"
 authors = ["Benny Nazimov <benick12@gmail.com>"]
 keywords = ["netcode"]
 license = "BSD-3-Clause"
-repository = "https://github.com/benny-n/netcode-rs"
-documentation = "https://docs.rs/netcode-rs"
-description = "Rust implementation of the netcode.io protocol"
+repository = "https://github.com/benny-n/netcode"
+documentation = "https://docs.rs/netcode"
+description = "Rust implementation of the netcode protocol"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
