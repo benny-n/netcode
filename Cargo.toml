@@ -14,7 +14,7 @@ description = "Rust implementation of the netcode.io protocol"
 
 [dependencies]
 byteorder = "1.4.3"
-chacha20poly1305 = { version = "0.10.1", features = ["std", "heapless"] }
+chacha20poly1305 = { version = "0.10.1", features = ["std"] }
 env_logger = "0.10.0"
 log = "0.4.19"
 socket2 = "0.5.3"
