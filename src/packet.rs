@@ -4,13 +4,12 @@ use std::{
 };
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use chacha20poly1305::aead::Payload;
 
 use crate::{
     bytes::Bytes,
     consts::{
-        MAC_SIZE, MAX_PAYLOAD_SIZE, NETCODE_VERSION, NETCODE_VERSION_SIZE, NONCE_BYTES_SIZE,
-        PRIVATE_KEY_SIZE, USER_DATA_SIZE,
+        MAC_SIZE, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION, NETCODE_VERSION_SIZE,
+        NONCE_BYTES_SIZE, PRIVATE_KEY_SIZE, USER_DATA_SIZE,
     },
     crypto,
     error::NetcodeError,
@@ -45,7 +44,7 @@ pub struct RequestPacket {
     pub protocol_id: u64,
     pub expire_timestamp: u64,
     pub token_nonce: [u8; NONCE_BYTES_SIZE],
-    pub token_data: [u8; ConnectTokenPrivate::BYTES_SIZE],
+    pub token_data: [u8; ConnectTokenPrivate::SIZE],
 }
 
 impl RequestPacket {
@@ -103,7 +102,7 @@ impl Bytes for RequestPacket {
         let expire_timestamp = reader.read_u64::<LittleEndian>()?;
         let mut token_nonce = [0; NONCE_BYTES_SIZE];
         reader.read_exact(&mut token_nonce)?;
-        let mut token_data = [0; ConnectTokenPrivate::BYTES_SIZE];
+        let mut token_data = [0; ConnectTokenPrivate::SIZE];
         reader.read_exact(&mut token_data)?;
         Ok(Self {
             version_info,
@@ -128,7 +127,7 @@ impl Bytes for DeniedPacket {
 
 pub struct ChallengePacket {
     pub sequence: u64,
-    pub token: [u8; ChallengeToken::NUM_BYTES],
+    pub token: [u8; ChallengeToken::SIZE],
 }
 impl Bytes for ChallengePacket {
     fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
@@ -139,7 +138,7 @@ impl Bytes for ChallengePacket {
 
     fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
         let sequence = reader.read_u64::<LittleEndian>()?;
-        let mut token = [0; ChallengeToken::NUM_BYTES];
+        let mut token = [0; ChallengeToken::SIZE];
         reader.read_exact(&mut token)?;
         Ok(Self { sequence, token })
     }
@@ -147,7 +146,7 @@ impl Bytes for ChallengePacket {
 
 pub struct ResponsePacket {
     pub sequence: u64,
-    pub token: [u8; ChallengeToken::NUM_BYTES],
+    pub token: [u8; ChallengeToken::SIZE],
 }
 impl Bytes for ResponsePacket {
     fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
@@ -158,7 +157,7 @@ impl Bytes for ResponsePacket {
 
     fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
         let sequence = reader.read_u64::<LittleEndian>()?;
-        let mut token = [0; ChallengeToken::NUM_BYTES];
+        let mut token = [0; ChallengeToken::SIZE];
         reader.read_exact(&mut token)?;
         Ok(Self { sequence, token })
     }
@@ -187,18 +186,6 @@ impl Bytes for KeepAlivePacket {
 
 pub struct PayloadPacket {
     pub payload: Vec<u8>,
-}
-impl Bytes for PayloadPacket {
-    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
-        writer.write_all(&self.payload)?;
-        Ok(())
-    }
-
-    fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
-        let mut payload = vec![0; MAX_PAYLOAD_SIZE];
-        reader.read_exact(&mut payload)?;
-        Ok(Self { payload })
-    }
 }
 
 pub struct DisconnectPacket {}
@@ -251,13 +238,13 @@ impl Packet {
     }
     pub fn write(
         &self,
-        buf: &mut [u8],
+        out: &mut [u8],
         sequence: u64,
         packet_key: &[u8; PRIVATE_KEY_SIZE],
         protocol_id: u64,
     ) -> Result<usize, NetcodeError> {
-        let len = buf.len();
-        let mut cursor = std::io::Cursor::new(&mut buf[..]);
+        let len = out.len();
+        let mut cursor = std::io::Cursor::new(&mut out[..]);
         if let Packet::Request(pkt) = self {
             cursor.write_u8(Packet::REQUEST)?;
             pkt.write_to(&mut cursor)?;
@@ -273,8 +260,8 @@ impl Packet {
             Packet::Challenge(pkt) => pkt.write_to(&mut cursor)?,
             Packet::Response(pkt) => pkt.write_to(&mut cursor)?,
             Packet::KeepAlive(pkt) => pkt.write_to(&mut cursor)?,
-            Packet::Payload(pkt) => pkt.write_to(&mut cursor)?,
             Packet::Disconnect(pkt) => pkt.write_to(&mut cursor)?,
+            Packet::Payload(PayloadPacket { payload }) => cursor.write_all(payload)?,
             _ => unreachable!(), // Packet::Request variant is handled above
         }
         if cursor.position() as usize > len - MAC_SIZE {
@@ -291,7 +278,7 @@ impl Packet {
         aead_cursor.write_u8(self.prefix_byte(sequence))?;
 
         crypto::encrypt(
-            &mut buf[encryption_start..encryption_end],
+            &mut out[encryption_start..encryption_end],
             Some(&aead),
             sequence,
             packet_key,
@@ -300,7 +287,7 @@ impl Packet {
         Ok(encryption_end)
     }
     pub fn read(
-        buf: &mut [u8],
+        buf: &mut [u8], // buffer needs to be mutable to perform decryption in-place
         packet_key: [u8; PRIVATE_KEY_SIZE],
         protocol_id: u64,
         timestamp: u64,
@@ -310,6 +297,9 @@ impl Packet {
         let buf_len = buf.len();
         if buf_len < 1 {
             return Err(Error::TooSmall.into());
+        }
+        if buf_len > MAX_PKT_BUF_SIZE {
+            return Err(Error::TooLarge.into());
         }
         let mut cursor = std::io::Cursor::new(&mut buf[..]);
         let prefix_byte = cursor.read_u8()?;
@@ -340,15 +330,16 @@ impl Packet {
         aead_cursor.write_u64::<LittleEndian>(protocol_id)?;
         aead_cursor.write_u8(prefix_byte)?;
 
-        let encryption_start = cursor.position() as usize;
+        let decryption_start = cursor.position() as usize;
+        let decryption_end = buf_len;
         crypto::decrypt(
-            &mut cursor.get_mut()[encryption_start..],
+            &mut cursor.get_mut()[decryption_start..decryption_end],
             Some(&aead),
             sequence,
             &packet_key,
         )?;
         // make sure cursor position is at the start of the decrypted data, so we can read it into a valid packet
-        cursor.set_position(encryption_start as u64);
+        cursor.set_position(decryption_start as u64);
 
         if pkt_kind >= Packet::KEEP_ALIVE {
             replay_protection.advance_sequence(sequence);
@@ -360,8 +351,12 @@ impl Packet {
             Packet::CHALLENGE => Packet::Challenge(ChallengePacket::read_from(&mut cursor)?),
             Packet::RESPONSE => Packet::Response(ResponsePacket::read_from(&mut cursor)?),
             Packet::KEEP_ALIVE => Packet::KeepAlive(KeepAlivePacket::read_from(&mut cursor)?),
-            Packet::PAYLOAD => Packet::Payload(PayloadPacket::read_from(&mut cursor)?),
             Packet::DISCONNECT => Packet::Disconnect(DisconnectPacket::read_from(&mut cursor)?),
+            Packet::PAYLOAD => {
+                let mut payload = vec![0; decryption_end - decryption_start - MAC_SIZE];
+                cursor.read_exact(&mut payload)?;
+                Packet::Payload(PayloadPacket { payload })
+            }
             t => return Err(Error::InvalidType(t).into()),
         };
         Ok(packet)
@@ -374,8 +369,6 @@ pub fn sequence_len(sequence: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
     use crate::{crypto::generate_key, token::ServerAddresses};
 
     use super::*;
@@ -424,12 +417,12 @@ mod tests {
         });
 
         let mut buf = [0u8; MAX_PAYLOAD_SIZE];
-        let size_written = packet
+        let size = packet
             .write(&mut buf, sequence, &packet_key, protocol_id)
             .unwrap();
 
         let packet = Packet::read(
-            &mut buf[..size_written],
+            &mut buf[..size],
             packet_key,
             protocol_id,
             0,
@@ -471,13 +464,13 @@ mod tests {
 
         let packet = Packet::Denied(DeniedPacket {});
 
-        let mut buf = [0u8; MAX_PAYLOAD_SIZE];
-        let size_written = packet
+        let mut buf = [0u8; MAX_PKT_BUF_SIZE];
+        let size = packet
             .write(&mut buf, sequence, &packet_key, protocol_id)
             .unwrap();
 
         let packet = Packet::read(
-            &mut buf[..size_written],
+            &mut buf[..size],
             packet_key,
             protocol_id,
             0,
@@ -489,5 +482,141 @@ mod tests {
         let Packet::Denied (_denied_pkt) = packet else {
             panic!("wrong packet type");
         };
+    }
+
+    #[test]
+    pub fn challenge_packet() {
+        let token = [0u8; ChallengeToken::SIZE];
+        let private_key = generate_key().unwrap();
+        let packet_key = generate_key().unwrap();
+        let protocol_id = 0x1234_5678_9abc_def0;
+        let sequence = 0u64;
+        let mut replay_protection = ReplayProtection::new();
+
+        let packet = Packet::Challenge(ChallengePacket { sequence, token });
+
+        let mut buf = [0u8; MAX_PKT_BUF_SIZE];
+        let size = packet
+            .write(&mut buf, sequence, &packet_key, protocol_id)
+            .unwrap();
+
+        let packet = Packet::read(
+            &mut buf[..size],
+            packet_key,
+            protocol_id,
+            0,
+            private_key,
+            &mut replay_protection,
+        )
+        .unwrap();
+
+        let Packet::Challenge (challenge_pkt) = packet else {
+            panic!("wrong packet type");
+        };
+
+        assert_eq!(challenge_pkt.token, token);
+        assert_eq!(challenge_pkt.sequence, sequence);
+    }
+
+    #[test]
+    pub fn keep_alive_packet() {
+        let private_key = generate_key().unwrap();
+        let packet_key = generate_key().unwrap();
+        let protocol_id = 0x1234_5678_9abc_def0;
+        let sequence = 0u64;
+        let client_index = 0;
+        let max_clients = 32;
+        let mut replay_protection = ReplayProtection::new();
+
+        let packet = Packet::KeepAlive(KeepAlivePacket {
+            client_index,
+            max_clients,
+        });
+
+        let mut buf = [0u8; MAX_PKT_BUF_SIZE];
+        let size = packet
+            .write(&mut buf, sequence, &packet_key, protocol_id)
+            .unwrap();
+
+        let packet = Packet::read(
+            &mut buf[..size],
+            packet_key,
+            protocol_id,
+            0,
+            private_key,
+            &mut replay_protection,
+        )
+        .unwrap();
+
+        let Packet::KeepAlive (keep_alive_pkt) = packet else {
+            panic!("wrong packet type");
+        };
+
+        assert_eq!(keep_alive_pkt.client_index, client_index);
+        assert_eq!(keep_alive_pkt.max_clients, max_clients);
+    }
+
+    #[test]
+    pub fn disconnect_packet() {
+        let private_key = generate_key().unwrap();
+        let packet_key = generate_key().unwrap();
+        let protocol_id = 0x1234_5678_9abc_def0;
+        let sequence = 0u64;
+        let mut replay_protection = ReplayProtection::new();
+
+        let packet = Packet::Disconnect(DisconnectPacket {});
+
+        let mut buf = [0u8; MAX_PKT_BUF_SIZE];
+        let size = packet
+            .write(&mut buf, sequence, &packet_key, protocol_id)
+            .unwrap();
+
+        let packet = Packet::read(
+            &mut buf[..size],
+            packet_key,
+            protocol_id,
+            0,
+            private_key,
+            &mut replay_protection,
+        )
+        .unwrap();
+
+        let Packet::Disconnect (_disconnect_pkt) = packet else {
+            panic!("wrong packet type");
+        };
+    }
+
+    #[test]
+    pub fn payload_packet() {
+        let private_key = generate_key().unwrap();
+        let packet_key = generate_key().unwrap();
+        let protocol_id = 0x1234_5678_9abc_def0;
+        let sequence = 0u64;
+        let mut replay_protection = ReplayProtection::new();
+
+        let packet = Packet::Payload(PayloadPacket {
+            payload: vec![0u8; 100],
+        });
+
+        let mut buf = [0u8; MAX_PAYLOAD_SIZE];
+        let size = packet
+            .write(&mut buf, sequence, &packet_key, protocol_id)
+            .unwrap();
+
+        let packet = Packet::read(
+            &mut buf[..size],
+            packet_key,
+            protocol_id,
+            0,
+            private_key,
+            &mut replay_protection,
+        )
+        .unwrap();
+
+        let Packet::Payload (data_pkt) = packet else {
+            panic!("wrong packet type");
+        };
+
+        assert_eq!(data_pkt.payload.len(), 100);
     }
 }

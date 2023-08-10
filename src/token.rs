@@ -1,15 +1,5 @@
 use byteorder::{LittleEndian, WriteBytesExt};
 
-// struct netcode_connect_token_private_t
-// {
-//     uint64_t client_id;
-//     int timeout_seconds;
-//     int num_server_addresses;
-//     struct netcode_address_t server_addresses[NETCODE_MAX_SERVERS_PER_CONNECT];
-//     uint8_t client_to_server_key[NETCODE_KEY_BYTES];
-//     uint8_t server_to_client_key[NETCODE_KEY_BYTES];
-//     uint8_t user_data[NETCODE_USER_DATA_BYTES];
-// };
 use crate::{
     bytes::Bytes,
     consts::{NETCODE_VERSION, NETCODE_VERSION_SIZE, PRIVATE_KEY_SIZE, USER_DATA_SIZE},
@@ -19,6 +9,7 @@ use crate::{
 
 use std::{
     io::{self, Write},
+    mem::size_of,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
 };
 
@@ -81,6 +72,7 @@ impl<'a> Iterator for ServerAddrsIter<'a> {
 }
 
 impl Bytes for ServerAddresses {
+    const SIZE: usize = size_of::<u32>() + MAX_SERVERS_PER_CONNECT * (1 + size_of::<u16>() + 16);
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
         buf.write_u32::<LittleEndian>(self.len())?;
         for addr in self.addrs.iter().flatten() {
@@ -141,7 +133,6 @@ pub struct ConnectTokenPrivate {
 }
 
 impl ConnectTokenPrivate {
-    pub(crate) const BYTES_SIZE: usize = 1024;
     pub fn new(
         client_id: u64,
         timeout_seconds: i32,
@@ -176,9 +167,9 @@ impl ConnectTokenPrivate {
         expire_timestamp: u64,
         nonce: u64,
         private_key: &[u8; PRIVATE_KEY_SIZE],
-    ) -> Result<[u8; Self::BYTES_SIZE], NetcodeError> {
+    ) -> Result<[u8; Self::SIZE], NetcodeError> {
         let aead = Self::aead(protocol_id, expire_timestamp)?;
-        let mut buf = [0u8; Self::BYTES_SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
+        let mut buf = [0u8; Self::SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
         let mut cursor = io::Cursor::new(&mut buf[..]);
         self.write_to(&mut cursor)?;
         crypto::encrypt(&mut buf, Some(&aead), nonce, private_key)?;
@@ -186,7 +177,7 @@ impl ConnectTokenPrivate {
     }
 
     pub fn decrypt(
-        encrypted: &mut [u8; Self::BYTES_SIZE],
+        encrypted: &mut [u8],
         protocol_id: u64,
         expire_timestamp: u64,
         nonce: u64,
@@ -200,6 +191,7 @@ impl ConnectTokenPrivate {
 }
 
 impl Bytes for ConnectTokenPrivate {
+    const SIZE: usize = 1024; // always padded to 1024 bytes
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
         buf.write_u64::<LittleEndian>(self.client_id)?;
         buf.write_i32::<LittleEndian>(self.timeout_seconds)?;
@@ -241,13 +233,13 @@ pub struct ChallengeToken {
 }
 
 impl ChallengeToken {
-    pub(crate) const NUM_BYTES: usize = 300;
+    pub(crate) const SIZE: usize = 300;
     pub fn encrypt(
         &self,
         sequence: u64,
         private_key: &[u8; PRIVATE_KEY_SIZE],
-    ) -> Result<[u8; Self::NUM_BYTES], NetcodeError> {
-        let mut buf = [0u8; Self::NUM_BYTES]; // NOTE: token buffer needs 16-bytes overhead for auth tag
+    ) -> Result<[u8; Self::SIZE], NetcodeError> {
+        let mut buf = [0u8; Self::SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
         let mut cursor = io::Cursor::new(&mut buf[..]);
         self.write_to(&mut cursor)?;
         crypto::encrypt(&mut buf, None, sequence, private_key)?;
@@ -255,7 +247,7 @@ impl ChallengeToken {
     }
 
     pub fn decrypt(
-        encrypted: &mut [u8; Self::NUM_BYTES],
+        encrypted: &mut [u8; Self::SIZE],
         sequence: u64,
         private_key: &[u8; PRIVATE_KEY_SIZE],
     ) -> Result<Self, NetcodeError> {
@@ -266,6 +258,7 @@ impl ChallengeToken {
 }
 
 impl Bytes for ChallengeToken {
+    const SIZE: usize = size_of::<u64>() + USER_DATA_SIZE;
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
         buf.write_u64::<LittleEndian>(self.client_id)?;
         buf.write_all(&self.user_data)?;
@@ -340,5 +333,26 @@ mod tests {
             private_token.client_to_server_key,
             private_token.client_to_server_key
         );
+    }
+
+    #[test]
+    fn encrypt_decrypt_challenge_token() {
+        let private_key = crypto::generate_key().unwrap();
+        let sequence = 1;
+        let client_id = 2;
+        let user_data = [0x11; USER_DATA_SIZE];
+
+        let challenge_token = ChallengeToken {
+            client_id,
+            user_data,
+        };
+
+        let mut encrypted = challenge_token.encrypt(sequence, &private_key).unwrap();
+
+        let challenge_token =
+            ChallengeToken::decrypt(&mut encrypted, sequence, &private_key).unwrap();
+
+        assert_eq!(challenge_token.client_id, client_id);
+        assert_eq!(challenge_token.user_data, user_data);
     }
 }
