@@ -369,7 +369,7 @@ pub fn sequence_len(sequence: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{crypto::generate_key, token::ServerAddresses};
+    use crate::{crypto::generate_key, token::AddressList};
 
     use super::*;
 
@@ -391,7 +391,7 @@ mod tests {
     fn request_packet() {
         let client_id = 0x1234;
         let timeout_seconds = -1;
-        let server_addresses = ServerAddresses::new("127.0.0.1:40000").unwrap();
+        let server_addresses = AddressList::new("127.0.0.1:40000").unwrap();
         let user_data = [0u8; USER_DATA_SIZE];
         let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();

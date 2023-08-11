@@ -14,4 +14,6 @@ pub enum NetcodeError {
     WouldBlock,
     #[error("invalid packet: {0}")]
     Packet(#[from] crate::packet::Error),
+    #[error("clock went backwards (did you invent a time machine?): {0}")]
+    SystemTimeError(#[from] std::time::SystemTimeError),
 }

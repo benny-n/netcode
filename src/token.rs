@@ -2,9 +2,13 @@ use byteorder::{LittleEndian, WriteBytesExt};
 
 use crate::{
     bytes::Bytes,
-    consts::{NETCODE_VERSION, NETCODE_VERSION_SIZE, PRIVATE_KEY_SIZE, USER_DATA_SIZE},
+    consts::{
+        DEFAULT_CONNECTION_TIMEOUT_SECONDS, DEFAULT_TOKEN_EXPIRE_SECONDS, NETCODE_VERSION,
+        NETCODE_VERSION_SIZE, PRIVATE_KEY_SIZE, USER_DATA_SIZE,
+    },
     crypto,
     error::NetcodeError,
+    server,
 };
 
 use std::{
@@ -16,12 +20,12 @@ use std::{
 pub const MAX_SERVERS_PER_CONNECT: usize = 32;
 
 #[derive(Debug, Clone, Copy)]
-pub struct ServerAddresses {
+pub struct AddressList {
     len: u32,
     addrs: [Option<SocketAddr>; MAX_SERVERS_PER_CONNECT],
 }
 
-impl ServerAddresses {
+impl AddressList {
     const IPV4: u8 = 1;
     const IPV6: u8 = 2;
     pub fn new(addrs: impl ToSocketAddrs) -> Result<Self, NetcodeError> {
@@ -71,7 +75,7 @@ impl<'a> Iterator for ServerAddrsIter<'a> {
     }
 }
 
-impl Bytes for ServerAddresses {
+impl Bytes for AddressList {
     const SIZE: usize = size_of::<u32>() + MAX_SERVERS_PER_CONNECT * (1 + size_of::<u16>() + 16);
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
         buf.write_u32::<LittleEndian>(self.len())?;
@@ -123,10 +127,10 @@ impl Bytes for ServerAddresses {
     }
 }
 
-pub struct ConnectTokenPrivate {
+pub(crate) struct ConnectTokenPrivate {
     pub(crate) client_id: u64,
     pub(crate) timeout_seconds: i32,
-    pub(crate) server_addresses: ServerAddresses,
+    pub(crate) server_addresses: AddressList,
     pub(crate) client_to_server_key: [u8; PRIVATE_KEY_SIZE],
     pub(crate) server_to_client_key: [u8; PRIVATE_KEY_SIZE],
     pub(crate) user_data: [u8; USER_DATA_SIZE],
@@ -136,7 +140,7 @@ impl ConnectTokenPrivate {
     pub fn new(
         client_id: u64,
         timeout_seconds: i32,
-        server_addresses: ServerAddresses,
+        server_addresses: AddressList,
         user_data: [u8; USER_DATA_SIZE],
     ) -> Result<Self, NetcodeError> {
         Ok(Self {
@@ -185,7 +189,7 @@ impl ConnectTokenPrivate {
     ) -> Result<Self, NetcodeError> {
         let aead = Self::aead(protocol_id, expire_timestamp)?;
         crypto::decrypt(encrypted, Some(&aead), nonce, private_key)?;
-        let mut cursor = io::Cursor::new(&encrypted[..]);
+        let mut cursor = io::Cursor::new(encrypted);
         Ok(Self::read_from(&mut cursor)?)
     }
 }
@@ -205,7 +209,7 @@ impl Bytes for ConnectTokenPrivate {
     fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
         let client_id = reader.read_u64::<LittleEndian>()?;
         let timeout_seconds = reader.read_i32::<LittleEndian>()?;
-        let server_addresses = ServerAddresses::read_from(reader)?;
+        let server_addresses = AddressList::read_from(reader)?;
 
         let mut client_to_server_key = [0; PRIVATE_KEY_SIZE];
         reader.read_exact(&mut client_to_server_key)?;
@@ -227,7 +231,7 @@ impl Bytes for ConnectTokenPrivate {
     }
 }
 
-pub struct ChallengeToken {
+pub(crate) struct ChallengeToken {
     client_id: u64,
     user_data: [u8; USER_DATA_SIZE],
 }
@@ -275,6 +279,184 @@ impl Bytes for ChallengeToken {
         })
     }
 }
+
+pub struct ConnectToken {
+    version_info: [u8; NETCODE_VERSION_SIZE],
+    protocol_id: u64,
+    create_timestamp: u64,
+    expire_timestamp: u64,
+    nonce: u64,
+    private_data: [u8; ConnectTokenPrivate::SIZE],
+    timeout_seconds: i32,
+    server_addresses: AddressList,
+    client_to_server_key: [u8; PRIVATE_KEY_SIZE],
+    server_to_client_key: [u8; PRIVATE_KEY_SIZE],
+}
+
+pub struct ConnectTokenBuilder<A: ToSocketAddrs> {
+    protocol_id: u64,
+    client_id: u64,
+    expire_seconds: i32,
+    nonce: u64,
+    timeout_seconds: i32,
+    public_server_addresses: A,
+    internal_server_addresses: Option<A>,
+    private_key: Option<[u8; PRIVATE_KEY_SIZE]>,
+    user_data: [u8; USER_DATA_SIZE],
+}
+
+impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
+    fn new(server_addresses: A, protocol_id: u64, client_id: u64, nonce: u64) -> Self {
+        Self {
+            protocol_id,
+            client_id,
+            expire_seconds: i32::MIN,
+            nonce,
+            timeout_seconds: DEFAULT_CONNECTION_TIMEOUT_SECONDS,
+            public_server_addresses: server_addresses,
+            internal_server_addresses: None,
+            private_key: None,
+            user_data: [0; USER_DATA_SIZE],
+        }
+    }
+    /// Sets the time in seconds that the token will be valid for.
+    pub fn token_expire_secs(mut self, expire_seconds: i32) -> Self {
+        self.expire_seconds = expire_seconds;
+        self
+    }
+    /// Sets the time in seconds that a connection will be kept alive without any packets being received.
+    pub fn connection_timeout_secs(mut self, timeout_seconds: i32) -> Self {
+        self.timeout_seconds = timeout_seconds;
+        self
+    }
+    /// Sets the user data that will be added to the token, this can be any data you want.
+    pub fn user_data(mut self, user_data: [u8; USER_DATA_SIZE]) -> Self {
+        self.user_data = user_data;
+        self
+    }
+    /// Sets the private key that will be used to encrypt the token.
+    pub fn private_key(mut self, private_key: [u8; PRIVATE_KEY_SIZE]) -> Self {
+        self.private_key = Some(private_key);
+        self
+    }
+    /// Sets the internal server addresses in the private data of the token, the server will bind to one of these addresses (usually the first one).
+    /// If this field is not set, the public server addresses provided when creating the builder will be used instead.
+    ///
+    /// This is useful for when you want to bind your server to a local address that is not accessible from the internet.
+    ///
+    /// The client will still use the public server addresses to connect to the server.
+    pub fn internal_address_list(mut self, internal_addresses: A) -> Self {
+        self.internal_server_addresses = Some(internal_addresses);
+        self
+    }
+    /// Generates the token and consumes the builder.
+    pub fn generate(self) -> Result<ConnectToken, NetcodeError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        let expire_timestamp = if self.expire_seconds < 0 {
+            u64::MAX
+        } else {
+            now + self.expire_seconds as u64
+        };
+        let public_server_addresses = AddressList::new(self.public_server_addresses)?;
+        let internal_server_addresses = match self.internal_server_addresses {
+            Some(addresses) => AddressList::new(addresses)?,
+            None => public_server_addresses,
+        };
+        let private_key = match self.private_key {
+            Some(key) => key,
+            None => crypto::generate_key()?,
+        };
+
+        let private_data = ConnectTokenPrivate {
+            client_id: self.client_id,
+            timeout_seconds: self.timeout_seconds,
+            server_addresses: internal_server_addresses,
+            client_to_server_key: crypto::generate_key()?,
+            server_to_client_key: crypto::generate_key()?,
+            user_data: self.user_data,
+        }
+        .encrypt(self.protocol_id, expire_timestamp, self.nonce, &private_key)?;
+
+        Ok(ConnectToken {
+            version_info: *NETCODE_VERSION,
+            protocol_id: self.protocol_id,
+            create_timestamp: now,
+            expire_timestamp,
+            nonce: self.nonce,
+            private_data,
+            timeout_seconds: self.timeout_seconds,
+            server_addresses: public_server_addresses,
+            client_to_server_key: crypto::generate_key()?,
+            server_to_client_key: crypto::generate_key()?,
+        })
+    }
+}
+
+impl ConnectToken {
+    pub fn build<A: ToSocketAddrs>(
+        server_addresses: A,
+        protocol_id: u64,
+        client_id: u64,
+        nonce: u64,
+    ) -> ConnectTokenBuilder<A> {
+        ConnectTokenBuilder::new(server_addresses, protocol_id, client_id, nonce)
+    }
+}
+
+impl Bytes for ConnectToken {
+    const SIZE: usize = 2048; // always padded to 2048 bytes
+    fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
+        buf.write_all(&self.version_info)?;
+        buf.write_u64::<LittleEndian>(self.protocol_id)?;
+        buf.write_u64::<LittleEndian>(self.create_timestamp)?;
+        buf.write_u64::<LittleEndian>(self.expire_timestamp)?;
+        buf.write_u64::<LittleEndian>(self.nonce)?;
+        buf.write_all(&self.private_data)?;
+        buf.write_i32::<LittleEndian>(self.timeout_seconds)?;
+        self.server_addresses.write_to(buf)?;
+        buf.write_all(&self.client_to_server_key)?;
+        buf.write_all(&self.server_to_client_key)?;
+        Ok(())
+    }
+
+    fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
+        let mut version_info = [0; NETCODE_VERSION_SIZE];
+        reader.read_exact(&mut version_info)?;
+
+        let protocol_id = reader.read_u64::<LittleEndian>()?;
+        let create_timestamp = reader.read_u64::<LittleEndian>()?;
+        let expire_timestamp = reader.read_u64::<LittleEndian>()?;
+        let nonce = reader.read_u64::<LittleEndian>()?;
+
+        let mut private_data = [0; ConnectTokenPrivate::SIZE];
+        reader.read_exact(&mut private_data)?;
+
+        let timeout_seconds = reader.read_i32::<LittleEndian>()?;
+
+        let server_addresses = AddressList::read_from(reader)?;
+
+        let mut client_to_server_key = [0; PRIVATE_KEY_SIZE];
+        reader.read_exact(&mut client_to_server_key)?;
+
+        let mut server_to_client_key = [0; PRIVATE_KEY_SIZE];
+        reader.read_exact(&mut server_to_client_key)?;
+
+        Ok(Self {
+            version_info,
+            protocol_id,
+            create_timestamp,
+            expire_timestamp,
+            nonce,
+            private_data,
+            timeout_seconds,
+            server_addresses,
+            client_to_server_key,
+            server_to_client_key,
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,7 +469,7 @@ mod tests {
         let nonce = 3;
         let client_id = 4;
         let timeout_seconds = 5;
-        let server_addresses = ServerAddresses::new(
+        let server_addresses = AddressList::new(
             &[
                 SocketAddr::from(([127, 0, 0, 1], 1)),
                 SocketAddr::from(([127, 0, 0, 1], 2)),
@@ -354,5 +536,112 @@ mod tests {
 
         assert_eq!(challenge_token.client_id, client_id);
         assert_eq!(challenge_token.user_data, user_data);
+    }
+
+    #[test]
+    fn connect_token_read_write() {
+        let private_key = crypto::generate_key().unwrap();
+        let protocol_id = 1;
+        let expire_timestamp = 2;
+        let nonce = 3;
+        let client_id = 4;
+        let timeout_seconds = 5;
+        let server_addresses = AddressList::new(
+            &[
+                SocketAddr::from(([127, 0, 0, 1], 1)),
+                SocketAddr::from(([127, 0, 0, 1], 2)),
+                SocketAddr::from(([127, 0, 0, 1], 3)),
+                SocketAddr::from(([127, 0, 0, 1], 4)),
+            ][..],
+        )
+        .unwrap();
+        let user_data = [0x11; USER_DATA_SIZE];
+
+        let private_token =
+            ConnectTokenPrivate::new(client_id, timeout_seconds, server_addresses, user_data)
+                .unwrap();
+
+        let mut encrypted = private_token
+            .encrypt(protocol_id, expire_timestamp, nonce, &private_key)
+            .unwrap();
+
+        let private_token = ConnectTokenPrivate::decrypt(
+            &mut encrypted,
+            protocol_id,
+            expire_timestamp,
+            nonce,
+            &private_key,
+        )
+        .unwrap();
+
+        let mut private_data = [0; ConnectTokenPrivate::SIZE];
+        let mut cursor = io::Cursor::new(&mut private_data[..]);
+        private_token.write_to(&mut cursor).unwrap();
+
+        let connect_token = ConnectToken {
+            version_info: *NETCODE_VERSION,
+            protocol_id,
+            create_timestamp: 0,
+            expire_timestamp,
+            nonce,
+            private_data,
+            timeout_seconds,
+            server_addresses,
+            client_to_server_key: private_token.client_to_server_key,
+            server_to_client_key: private_token.server_to_client_key,
+        };
+
+        let mut buf = Vec::new();
+        connect_token.write_to(&mut buf).unwrap();
+
+        let connect_token = ConnectToken::read_from(&mut buf.as_slice()).unwrap();
+
+        assert_eq!(connect_token.version_info, *NETCODE_VERSION);
+        assert_eq!(connect_token.protocol_id, protocol_id);
+        assert_eq!(connect_token.create_timestamp, 0);
+        assert_eq!(connect_token.expire_timestamp, expire_timestamp);
+        assert_eq!(connect_token.nonce, nonce);
+        assert_eq!(connect_token.private_data, private_data);
+        assert_eq!(connect_token.timeout_seconds, timeout_seconds);
+        connect_token
+            .server_addresses
+            .iter()
+            .zip(server_addresses.iter())
+            .for_each(|(have, expected)| {
+                assert_eq!(have, expected);
+            });
+    }
+
+    #[test]
+    fn connect_token_builder() {
+        let protocol_id = 1;
+        let nonce = 3;
+        let client_id = 4;
+        let server_addresses = "127.0.0.1:12345";
+
+        let connect_token = ConnectToken::build(server_addresses, protocol_id, client_id, nonce)
+            .private_key([0x42; PRIVATE_KEY_SIZE])
+            .user_data([0x11; USER_DATA_SIZE])
+            .connection_timeout_secs(5)
+            .token_expire_secs(6)
+            .internal_address_list("0.0.0.0:0")
+            .generate()
+            .unwrap();
+
+        assert_eq!(connect_token.version_info, *NETCODE_VERSION);
+        assert_eq!(connect_token.protocol_id, protocol_id);
+        assert_eq!(connect_token.nonce, nonce);
+        assert_eq!(connect_token.timeout_seconds, 5);
+        assert_eq!(
+            connect_token.expire_timestamp,
+            connect_token.create_timestamp + 6
+        );
+        connect_token
+            .server_addresses
+            .iter()
+            .zip(server_addresses.to_socket_addrs().into_iter().flatten())
+            .for_each(|(have, expected)| {
+                assert_eq!(have, expected);
+            });
     }
 }
