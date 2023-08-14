@@ -212,13 +212,13 @@ pub enum Packet {
 pub type PacketKind = u8;
 
 impl Packet {
-    const REQUEST: PacketKind = 0;
-    const DENIED: PacketKind = 1;
-    const CHALLENGE: PacketKind = 2;
-    const RESPONSE: PacketKind = 3;
-    const KEEP_ALIVE: PacketKind = 4;
-    const PAYLOAD: PacketKind = 5;
-    const DISCONNECT: PacketKind = 6;
+    pub(crate) const REQUEST: PacketKind = 0;
+    pub(crate) const DENIED: PacketKind = 1;
+    pub(crate) const CHALLENGE: PacketKind = 2;
+    pub(crate) const RESPONSE: PacketKind = 3;
+    pub(crate) const KEEP_ALIVE: PacketKind = 4;
+    pub(crate) const PAYLOAD: PacketKind = 5;
+    pub(crate) const DISCONNECT: PacketKind = 6;
     fn kind(&self) -> PacketKind {
         match self {
             Packet::Request(_) => Packet::REQUEST,
@@ -292,7 +292,7 @@ impl Packet {
         protocol_id: u64,
         timestamp: u64,
         private_key: [u8; PRIVATE_KEY_SIZE],
-        replay_protection: &mut ReplayProtection,
+        replay_protection: Option<&mut ReplayProtection>,
     ) -> Result<Self, NetcodeError> {
         let buf_len = buf.len();
         if buf_len < 1 {
@@ -320,8 +320,10 @@ impl Packet {
         let sequence = u64::from_le_bytes(sequence);
 
         // Replay protection
-        if pkt_kind >= Packet::KEEP_ALIVE && replay_protection.is_already_received(sequence) {
-            return Err(Error::AlreadyReceived(sequence).into());
+        if let Some(replay_protection) = replay_protection.as_ref() {
+            if pkt_kind >= Packet::KEEP_ALIVE && replay_protection.is_already_received(sequence) {
+                return Err(Error::AlreadyReceived(sequence).into());
+            }
         }
 
         let mut aead = [0u8; NETCODE_VERSION_SIZE + size_of::<u64>() + size_of::<u8>()];
@@ -341,8 +343,10 @@ impl Packet {
         // make sure cursor position is at the start of the decrypted data, so we can read it into a valid packet
         cursor.set_position(decryption_start as u64);
 
-        if pkt_kind >= Packet::KEEP_ALIVE {
-            replay_protection.advance_sequence(sequence);
+        if let Some(replay_protection) = replay_protection {
+            if pkt_kind >= Packet::KEEP_ALIVE {
+                replay_protection.advance_sequence(sequence);
+            }
         }
 
         let packet = match pkt_kind {
@@ -427,7 +431,7 @@ mod tests {
             protocol_id,
             0,
             private_key,
-            &mut replay_protection,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -475,7 +479,7 @@ mod tests {
             protocol_id,
             0,
             private_key,
-            &mut replay_protection,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -506,7 +510,7 @@ mod tests {
             protocol_id,
             0,
             private_key,
-            &mut replay_protection,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -544,7 +548,7 @@ mod tests {
             protocol_id,
             0,
             private_key,
-            &mut replay_protection,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -577,7 +581,7 @@ mod tests {
             protocol_id,
             0,
             private_key,
-            &mut replay_protection,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -609,7 +613,7 @@ mod tests {
             protocol_id,
             0,
             private_key,
-            &mut replay_protection,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
