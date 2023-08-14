@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::f32::consts::E;
 use std::io::{self};
@@ -7,11 +8,14 @@ use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::bytes::Bytes;
 use crate::consts::{
-    MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PRIVATE_KEY_SIZE, SERVER_SOCKET_RECV_BUF_SIZE,
-    SERVER_SOCKET_SEND_BUF_SIZE,
+    MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PRIVATE_KEY_SIZE,
+    SERVER_SOCKET_RECV_BUF_SIZE, SERVER_SOCKET_SEND_BUF_SIZE,
 };
 use crate::error::NetcodeError;
-use crate::packet::{ChallengePacket, DeniedPacket, DisconnectPacket, Packet, RequestPacket};
+use crate::packet::{
+    ChallengePacket, DeniedPacket, DisconnectPacket, KeepAlivePacket, Packet, RequestPacket,
+    ResponsePacket,
+};
 use crate::replay::ReplayProtection;
 use crate::socket::NetcodeSocket;
 use crate::token::{ChallengeToken, ConnectTokenPrivate};
@@ -30,7 +34,13 @@ pub type Result<T> = std::result::Result<T, NetcodeError>;
 // uint8_t send_key[NETCODE_KEY_BYTES*NETCODE_MAX_ENCRYPTION_MAPPINGS];
 // uint8_t receive_key[NETCODE_KEY_BYTES*NETCODE_MAX_ENCRYPTION_MAPPINGS];
 
+struct TokenEntry {
+    time: f64,
+    mac: [u8; 16],
+}
+
 struct Connection {
+    connected: bool,
     addr: SocketAddr,
     timeout: i32,
     expire_time: f64,
@@ -41,6 +51,15 @@ struct Connection {
     receive_key: Key,
     sequence: u64,
     replay_protection: ReplayProtection,
+}
+
+impl Connection {
+    fn connect(&mut self) {
+        self.connected = true;
+    }
+    fn is_connected(&self) -> bool {
+        self.connected
+    }
 }
 
 pub type ClientId = u64;
@@ -69,6 +88,7 @@ impl ConnectionCache {
         receive_key: Key,
     ) {
         let conn = Connection {
+            connected: false,
             addr,
             timeout,
             expire_time,
@@ -139,6 +159,7 @@ pub struct Server<T: Transceiver> {
     challenge_key: Key,
     protocol_id: u64,
     conn_cache: ConnectionCache,
+    token_entries: HashMap<SocketAddr, TokenEntry>,
     cfg: ServerConfig,
     // token_cache: HashMap<...>, // TODO: implement token cache?
 }
@@ -157,6 +178,7 @@ impl Server<NetcodeSocket> {
             challenge_sequence: 0,
             challenge_key: crypto::generate_key()?,
             conn_cache: ConnectionCache::new(time),
+            token_entries: HashMap::new(),
             cfg: ServerConfig::default(),
         })
     }
@@ -294,6 +316,20 @@ impl<T: Transceiver> Server<T> {
             );
             return Ok(());
         };
+        let mac: [u8; MAC_SIZE] = packet.token_data
+            [ConnectTokenPrivate::SIZE - MAC_SIZE..ConnectTokenPrivate::SIZE]
+            .try_into()
+            .map_err(|_| NetcodeError::InvalidPacket)?;
+        let token_entry = self.token_entries.entry(from).or_insert(TokenEntry {
+            time: self.time,
+            mac,
+        });
+        if token_entry.mac == mac {
+            log::trace!("server ignored connection request. connect token has already been used");
+            return Ok(());
+        }
+        token_entry.time = self.time;
+        token_entry.mac = mac;
         if self.conn_cache.map.len() >= self.max_clients {
             log::trace!("server denied connection request. server is full");
             self.send_to_addr(DeniedPacket::new(), from, token.server_to_client_key)?;
@@ -327,6 +363,51 @@ impl<T: Transceiver> Server<T> {
         )?;
         log::trace!("server sent connection challenge packet");
         self.challenge_sequence += 1;
+        Ok(())
+    }
+    fn process_connection_response(
+        &mut self,
+        from: SocketAddr,
+        mut packet: ResponsePacket,
+    ) -> Result<()> {
+        let Ok(challenge_token) = ChallengeToken::decrypt(&mut packet.token, packet.sequence, &self.challenge_key) else {
+            log::trace!("server ignored connection response. failed to decrypt challenge token");
+            return Ok(());
+        };
+        let num_clients = self.conn_cache.map.len();
+        let Some(send_key) = self.conn_cache.find(challenge_token.client_id).map(|conn| conn.send_key) else {
+            log::trace!("server ignored connection response. no packet send key");
+            return Ok(());
+        };
+        if num_clients >= self.max_clients {
+            log::trace!("server denied connection request. server is full");
+            self.send_to_addr(DeniedPacket::new(), from, send_key)?;
+            return Ok(());
+        };
+        self.conn_cache
+            .map
+            .entry(challenge_token.client_id)
+            .and_modify(|conn| {
+                conn.connect();
+                conn.expire_time = -1.0; // TODO: check if this is correct
+                conn.sequence = 0;
+                conn.last_send_time = self.time;
+                conn.last_receive_time = self.time;
+            });
+        log::debug!("server accepted client {}", challenge_token.client_id);
+        self.send_to_addr(
+            KeepAlivePacket::new(
+                // self.conn_cache
+                //     .map
+                //     .keys()
+                //     .position(|&id| id == challenge_token.client_id)
+                //     .unwrap() as i32, // unwrap is guaranteed to succeed because the client id is guaranteed to be in the map at this point
+                0, // TODO: come back to this
+                self.max_clients as i32,
+            ),
+            from,
+            send_key,
+        )?;
         Ok(())
     }
     pub fn check_for_timeouts(&mut self) -> Result<()> {

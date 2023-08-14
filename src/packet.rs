@@ -179,6 +179,14 @@ pub struct KeepAlivePacket {
     pub client_index: i32,
     pub max_clients: i32,
 }
+impl KeepAlivePacket {
+    pub(crate) fn new(client_index: i32, max_clients: i32) -> Packet {
+        Packet::KeepAlive(KeepAlivePacket {
+            client_index,
+            max_clients,
+        })
+    }
+}
 impl Bytes for KeepAlivePacket {
     fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
         writer.write_i32::<LittleEndian>(self.client_index)?;
