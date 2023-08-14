@@ -114,7 +114,7 @@ impl Bytes for RequestPacket {
 
 pub struct DeniedPacket {}
 impl DeniedPacket {
-    pub(crate) fn new() -> Packet {
+    pub(crate) fn create() -> Packet {
         Packet::Denied(DeniedPacket {})
     }
 }
@@ -133,7 +133,7 @@ pub struct ChallengePacket {
     pub token: [u8; ChallengeToken::SIZE],
 }
 impl ChallengePacket {
-    pub(crate) fn new(sequence: u64, token_bytes: [u8; ChallengeToken::SIZE]) -> Packet {
+    pub(crate) fn create(sequence: u64, token_bytes: [u8; ChallengeToken::SIZE]) -> Packet {
         Packet::Challenge(ChallengePacket {
             sequence,
             token: token_bytes,
@@ -180,7 +180,7 @@ pub struct KeepAlivePacket {
     pub max_clients: i32,
 }
 impl KeepAlivePacket {
-    pub(crate) fn new(client_index: i32, max_clients: i32) -> Packet {
+    pub(crate) fn create(client_index: i32, max_clients: i32) -> Packet {
         Packet::KeepAlive(KeepAlivePacket {
             client_index,
             max_clients,
@@ -210,7 +210,7 @@ pub struct PayloadPacket {
 
 pub struct DisconnectPacket {}
 impl DisconnectPacket {
-    pub(crate) fn new() -> Packet {
+    pub(crate) fn create() -> Packet {
         Packet::Disconnect(Self {})
     }
 }
@@ -232,6 +232,20 @@ pub enum Packet {
     KeepAlive(KeepAlivePacket),
     Payload(PayloadPacket),
     Disconnect(DisconnectPacket),
+}
+
+impl std::fmt::Display for Packet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Packet::Request(_) => write!(f, "connection request"),
+            Packet::Response(_) => write!(f, "connection response"),
+            Packet::KeepAlive(_) => write!(f, "keep alive packet"),
+            Packet::Payload(_) => write!(f, "payload packet"),
+            Packet::Disconnect(_) => write!(f, "disconnect packet"),
+            Packet::Denied(_) => write!(f, "denied packet"),
+            Packet::Challenge(_) => write!(f, "challenge packet"),
+        }
+    }
 }
 
 pub type PacketKind = u8;
@@ -260,6 +274,9 @@ impl Packet {
     }
     pub(crate) fn seq_len_and_pkt_kind(first_byte: u8) -> (usize, PacketKind) {
         ((first_byte >> 4) as usize, first_byte & 0xF)
+    }
+    pub(crate) fn is_connection_request(first_byte: u8) -> bool {
+        first_byte == Packet::REQUEST
     }
     pub fn write(
         &self,
@@ -483,7 +500,6 @@ mod tests {
 
     #[test]
     fn denied_packet() {
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
@@ -513,7 +529,6 @@ mod tests {
     #[test]
     pub fn challenge_packet() {
         let token = [0u8; ChallengeToken::SIZE];
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
@@ -545,7 +560,6 @@ mod tests {
 
     #[test]
     pub fn keep_alive_packet() {
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
@@ -582,7 +596,6 @@ mod tests {
 
     #[test]
     pub fn disconnect_packet() {
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
@@ -611,7 +624,6 @@ mod tests {
 
     #[test]
     pub fn payload_packet() {
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;

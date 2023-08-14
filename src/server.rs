@@ -12,6 +12,7 @@ use crate::consts::{
     SERVER_SOCKET_RECV_BUF_SIZE, SERVER_SOCKET_SEND_BUF_SIZE,
 };
 use crate::error::NetcodeError;
+use crate::free_list::FreeList;
 use crate::packet::{
     ChallengePacket, DeniedPacket, DisconnectPacket, KeepAlivePacket, Packet, RequestPacket,
     ResponsePacket,
@@ -39,8 +40,11 @@ struct TokenEntry {
     mac: [u8; 16],
 }
 
+#[derive(Debug, Clone, Copy)]
 struct Connection {
+    confirmed: bool,
     connected: bool,
+    client_id: u64,
     addr: SocketAddr,
     timeout: i32,
     expire_time: f64,
@@ -50,12 +54,17 @@ struct Connection {
     send_key: Key,
     receive_key: Key,
     sequence: u64,
-    replay_protection: ReplayProtection,
 }
 
 impl Connection {
+    fn confirm(&mut self) {
+        self.confirmed = true;
+    }
     fn connect(&mut self) {
         self.connected = true;
+    }
+    fn is_confirmed(&self) -> bool {
+        self.confirmed
     }
     fn is_connected(&self) -> bool {
         self.connected
@@ -63,18 +72,30 @@ impl Connection {
 }
 
 pub type ClientId = u64;
+pub type ClientIndex = usize;
 
 struct ConnectionCache {
-    map: HashMap<ClientId, Connection>,
-    addr_to_id: HashMap<SocketAddr, ClientId>, // optimization for finding client_id from addr
+    // this somewhat mimics the original C implementation, but it's not exactly the same
+    clients: FreeList<Connection, MAX_CLIENTS>,
+
+    // we are not using a free-list here to not allocate memory up-front, since `ReplayProtection` is biggish (~2kb)
+    replay_protection: HashMap<ClientIndex, ReplayProtection>,
+
+    // optimization for finding client_index from addr or id quickly
+    addr_to_idx: HashMap<SocketAddr, ClientIndex>,
+    id_to_idx: HashMap<ClientId, ClientIndex>,
+
+    // corresponds to the server time
     time: f64,
 }
 
 impl ConnectionCache {
     fn new(server_time: f64) -> Self {
         Self {
-            map: HashMap::new(),
-            addr_to_id: HashMap::new(),
+            clients: FreeList::new(),
+            replay_protection: HashMap::new(),
+            addr_to_idx: HashMap::new(),
+            id_to_idx: HashMap::new(),
             time: server_time,
         }
     }
@@ -88,7 +109,9 @@ impl ConnectionCache {
         receive_key: Key,
     ) {
         let conn = Connection {
+            confirmed: false,
             connected: false,
+            client_id,
             addr,
             timeout,
             expire_time,
@@ -98,42 +121,60 @@ impl ConnectionCache {
             send_key,
             receive_key,
             sequence: 0, // TODO: check if this can simply be grabbed from the replay protection
-            replay_protection: ReplayProtection::new(),
         };
-        self.map.insert(client_id, conn);
-        self.addr_to_id.insert(addr, client_id);
+        let client_idx = self.clients.insert(conn);
+        self.replay_protection
+            .insert(client_idx, ReplayProtection::new());
+        self.addr_to_idx.insert(addr, client_idx);
+        self.id_to_idx.insert(client_id, client_idx);
     }
-    fn remove(&mut self, client_id: ClientId) {
-        if let Some((_, conn)) = self.map.remove_entry(&client_id) {
-            self.addr_to_id.remove(&conn.addr);
+    fn remove(&mut self, client_idx: ClientIndex) {
+        let Some(conn) = self.clients.get_mut(client_idx) else {
+            return;
         };
+        if !conn.is_connected() {
+            return;
+        }
+        self.addr_to_idx.remove(&conn.addr);
+        self.id_to_idx.remove(&conn.client_id);
+        self.replay_protection.remove(&client_idx);
+        self.clients.remove(client_idx);
     }
-    fn get_client_id(&self, addr: SocketAddr) -> Option<ClientId> {
-        self.addr_to_id.get(&addr).copied()
+    fn get_client_idx(&self, addr: SocketAddr) -> Option<ClientIndex> {
+        self.addr_to_idx.get(&addr).copied()
     }
-    fn find(&mut self, client_id: ClientId) -> Option<&mut Connection> {
-        self.map.get_mut(&client_id).map(|conn| {
-            conn.last_access_time = self.time;
-            conn
+    fn find_by_id(&mut self, client_id: ClientId) -> Option<(usize, &mut Connection)> {
+        self.id_to_idx.get(&client_id).map(|&idx| {
+            self.clients[idx].last_access_time = self.time;
+            (idx, &mut self.clients[idx])
         })
     }
     fn find_by_addr(&mut self, addr: SocketAddr) -> Option<&mut Connection> {
-        self.get_client_id(addr)
-            .and_then(|client_id| self.find(client_id))
+        self.addr_to_idx
+            .get(&addr)
+            .map(|&idx| &mut self.clients[idx])
     }
     fn is_connection_expired(conn: &Connection, time: f64) -> bool {
         (0.0..time).contains(&conn.expire_time)
             || (0.0..time - conn.last_access_time).contains(&(conn.timeout as f64))
     }
     fn is_expired(&self, client_id: u64) -> bool {
-        self.map
+        self.id_to_idx
             .get(&client_id)
-            .is_some_and(|conn| Self::is_connection_expired(conn, self.time))
+            .is_some_and(|&idx| Self::is_connection_expired(&self.clients[idx], self.time))
     }
     fn update(&mut self, time: f64) {
         self.time = time;
-        self.map
-            .retain(|_, conn| !Self::is_connection_expired(conn, self.time));
+        let expired_indices = self
+            .clients
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, conn)| Self::is_connection_expired(&conn, time))
+            .map(|(idx, _)| idx)
+            .collect::<Vec<_>>();
+        for idx in expired_indices {
+            self.remove(idx);
+        }
     }
 }
 
@@ -161,7 +202,6 @@ pub struct Server<T: Transceiver> {
     conn_cache: ConnectionCache,
     token_entries: HashMap<SocketAddr, TokenEntry>,
     cfg: ServerConfig,
-    // token_cache: HashMap<...>, // TODO: implement token cache?
 }
 
 impl Server<NetcodeSocket> {
@@ -196,19 +236,44 @@ impl Server<NetcodeSocket> {
 // }
 
 impl<T: Transceiver> Server<T> {
+    fn touch_client(&mut self, client_idx: Option<ClientIndex>) -> Result<()> {
+        let Some(idx) = client_idx else {
+            return Ok(());
+        };
+        let Some(conn) = self.conn_cache.clients.get_mut(idx) else {
+            return Ok(());
+        };
+        conn.last_receive_time = self.time;
+        if !conn.is_confirmed() {
+            log::trace!("server confirmed connection with client {idx}");
+            conn.confirm();
+        }
+        Ok(())
+    }
     fn process_packet(&mut self, addr: SocketAddr, packet: Packet) -> Result<()> {
+        let client_idx = self.conn_cache.get_client_idx(addr);
+        log::trace!(
+            "server received {} from {}",
+            packet.to_string(),
+            client_idx
+                .map(|idx| format!("client {}", idx))
+                .unwrap_or_else(|| addr.to_string())
+        );
         match packet {
             Packet::Request(packet) => self.process_connection_request(addr, packet),
-            Packet::KeepAlive { .. } => {
-                todo!()
+            Packet::Response(packet) => self.process_connection_response(addr, packet),
+            Packet::KeepAlive(_) => self.touch_client(client_idx),
+            Packet::Payload(_) => {
+                self.touch_client(client_idx)?;
+                todo!("process payload packet")
             }
-            Packet::Disconnect { .. } => {
-                todo!()
+            Packet::Disconnect(_) => {
+                if let Some(idx) = client_idx {
+                    self.disconnect_client(idx)?;
+                }
+                Ok(())
             }
-            Packet::Payload { .. } => {
-                todo!()
-            }
-            _ => todo!(),
+            _ => Err(NetcodeError::InvalidPacket)?,
         }
     }
     pub fn update(&mut self, time: f64) -> Result<()> {
@@ -226,17 +291,19 @@ impl<T: Transceiver> Server<T> {
             // Too small to be a packet
             return Ok(());
         }
-        let (_, kind) = Packet::seq_len_and_pkt_kind(buf[0]);
-        let (key, replay_protection) = match self.conn_cache.find_by_addr(addr) {
-            Some(conn) => {
-                // New client
-                if kind != Packet::REQUEST {
-                    // Not a connect packet
-                    return Ok(());
-                }
-                (conn.receive_key, Some(&mut conn.replay_protection))
+        let (key, replay_protection) = match self.conn_cache.addr_to_idx.get(&addr) {
+            Some(client_idx) => (
+                self.conn_cache.clients[*client_idx].receive_key,
+                self.conn_cache.replay_protection.get_mut(client_idx),
+            ),
+            None if Packet::is_connection_request(buf[0]) => (self.private_key, None),
+            None => {
+                // Not a connection request packet, and not a known client, so ignore
+                log::trace!(
+                    "server ignored non-connection-request packet from unknown address {addr}"
+                );
+                return Ok(());
             }
-            None => (self.private_key, None),
         };
         let packet = Packet::read(
             &mut buf[..size],
@@ -255,9 +322,9 @@ impl<T: Transceiver> Server<T> {
         self.sequence += 1;
         Ok(())
     }
-    fn send_to_client(&mut self, packet: Packet, id: ClientId) -> Result<()> {
+    fn send_to_client(&mut self, packet: Packet, idx: ClientIndex) -> Result<()> {
         let mut buf = [0u8; MAX_PKT_BUF_SIZE];
-        let Some(conn) = self.conn_cache.find(id) else {
+        let Some(conn) = self.conn_cache.clients.get_mut(idx) else {
             log::trace!("client connection not found");
             return Ok(());
         };
@@ -269,20 +336,26 @@ impl<T: Transceiver> Server<T> {
         conn.sequence += 1;
         Ok(())
     }
-    fn disconnect_client(&mut self, client_id: u64) -> Result<()> {
-        log::trace!("server disconnected client {}", client_id);
+    fn disconnect_client(&mut self, client_idx: usize) -> Result<()> {
+        log::trace!("server disconnected client {}", client_idx);
         for _ in 0..self.cfg.num_disconnect_packets {
-            self.send_to_client(DisconnectPacket::new(), client_id)?;
+            self.send_to_client(DisconnectPacket::create(), client_idx)?;
         }
-        self.conn_cache.remove(client_id);
+        self.conn_cache.remove(client_idx);
         Ok(())
     }
     fn disconnect_all(&mut self) -> Result<()> {
         log::trace!("server disconnecting all clients");
-        // keys must be collected first because `disconnect_client` mutates the cache and can possibly remove existing keys
-        let clients = self.conn_cache.map.keys().copied().collect::<Vec<_>>();
-        for client_id in clients {
-            self.disconnect_client(client_id)?;
+        let disconnect_indices = self
+            .conn_cache
+            .clients
+            .iter()
+            .enumerate()
+            .filter(|(_, conn)| conn.is_connected())
+            .map(|(idx, _)| idx)
+            .collect::<Vec<_>>();
+        for idx in disconnect_indices {
+            self.disconnect_client(idx)?;
         }
         Ok(())
     }
@@ -306,11 +379,11 @@ impl<T: Transceiver> Server<T> {
             );
             return Ok(());
         };
-        if self.conn_cache.addr_to_id.get(&from).is_some() {
+        if self.conn_cache.addr_to_idx.get(&from).is_some() {
             log::trace!("server ignored connection request. a client with this address is already connected");
             return Ok(());
         };
-        if self.conn_cache.find(token.client_id).is_some() {
+        if self.conn_cache.find_by_id(token.client_id).is_some() {
             log::trace!(
                 "server ignored connection request. a client with this id is already connected"
             );
@@ -330,9 +403,9 @@ impl<T: Transceiver> Server<T> {
         }
         token_entry.time = self.time;
         token_entry.mac = mac;
-        if self.conn_cache.map.len() >= self.max_clients {
+        if self.conn_cache.clients.len() >= self.max_clients {
             log::trace!("server denied connection request. server is full");
-            self.send_to_addr(DeniedPacket::new(), from, token.server_to_client_key)?;
+            self.send_to_addr(DeniedPacket::create(), from, token.server_to_client_key)?;
             return Ok(());
         };
         let expire_time = if token.timeout_seconds >= 0 {
@@ -357,7 +430,7 @@ impl<T: Transceiver> Server<T> {
             return Ok(());
         };
         self.send_to_addr(
-            ChallengePacket::new(self.challenge_sequence, challenge_token_encrypted),
+            ChallengePacket::create(self.challenge_sequence, challenge_token_encrypted),
             from,
             token.server_to_client_key,
         )?;
@@ -374,39 +447,30 @@ impl<T: Transceiver> Server<T> {
             log::trace!("server ignored connection response. failed to decrypt challenge token");
             return Ok(());
         };
-        let num_clients = self.conn_cache.map.len();
-        let Some(send_key) = self.conn_cache.find(challenge_token.client_id).map(|conn| conn.send_key) else {
+        let num_clients = self.conn_cache.clients.len();
+        let Some((idx, _)) = self.conn_cache.find_by_id(challenge_token.client_id) else {
             log::trace!("server ignored connection response. no packet send key");
             return Ok(());
         };
         if num_clients >= self.max_clients {
             log::trace!("server denied connection request. server is full");
-            self.send_to_addr(DeniedPacket::new(), from, send_key)?;
+            self.send_to_addr(
+                DeniedPacket::create(),
+                from,
+                self.conn_cache.clients[idx].send_key,
+            )?;
             return Ok(());
         };
-        self.conn_cache
-            .map
-            .entry(challenge_token.client_id)
-            .and_modify(|conn| {
-                conn.connect();
-                conn.expire_time = -1.0; // TODO: check if this is correct
-                conn.sequence = 0;
-                conn.last_send_time = self.time;
-                conn.last_receive_time = self.time;
-            });
+        self.conn_cache.clients[idx].connect();
+        self.conn_cache.clients[idx].expire_time = -1.0; // TODO: check if this is correct
+        self.conn_cache.clients[idx].sequence = 0;
+        self.conn_cache.clients[idx].last_send_time = self.time;
+        self.conn_cache.clients[idx].last_receive_time = self.time;
         log::debug!("server accepted client {}", challenge_token.client_id);
         self.send_to_addr(
-            KeepAlivePacket::new(
-                // self.conn_cache
-                //     .map
-                //     .keys()
-                //     .position(|&id| id == challenge_token.client_id)
-                //     .unwrap() as i32, // unwrap is guaranteed to succeed because the client id is guaranteed to be in the map at this point
-                0, // TODO: come back to this
-                self.max_clients as i32,
-            ),
+            KeepAlivePacket::create(idx as i32, self.max_clients as i32),
             from,
-            send_key,
+            self.conn_cache.clients[idx].send_key,
         )?;
         Ok(())
     }
