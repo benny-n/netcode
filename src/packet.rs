@@ -15,6 +15,7 @@ use crate::{
     error::NetcodeError,
     replay::ReplayProtection,
     token::{ChallengeToken, ConnectTokenPrivate},
+    Key,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -64,10 +65,7 @@ impl RequestPacket {
         Ok(())
     }
 
-    pub(crate) fn decrypt_token_data(
-        &mut self,
-        private_key: [u8; PRIVATE_KEY_SIZE],
-    ) -> Result<(), NetcodeError> {
+    pub(crate) fn decrypt_token_data(&mut self, private_key: Key) -> Result<(), NetcodeError> {
         let decrypted = ConnectTokenPrivate::decrypt(
             &mut self.token_data,
             self.protocol_id,
@@ -115,6 +113,11 @@ impl Bytes for RequestPacket {
 }
 
 pub struct DeniedPacket {}
+impl DeniedPacket {
+    pub(crate) fn new() -> Packet {
+        Packet::Denied(DeniedPacket {})
+    }
+}
 impl Bytes for DeniedPacket {
     fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
         Ok(())
@@ -129,6 +132,15 @@ pub struct ChallengePacket {
     pub sequence: u64,
     pub token: [u8; ChallengeToken::SIZE],
 }
+impl ChallengePacket {
+    pub(crate) fn new(sequence: u64, token_bytes: [u8; ChallengeToken::SIZE]) -> Packet {
+        Packet::Challenge(ChallengePacket {
+            sequence,
+            token: token_bytes,
+        })
+    }
+}
+
 impl Bytes for ChallengePacket {
     fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
         writer.write_u64::<LittleEndian>(self.sequence)?;
@@ -189,6 +201,11 @@ pub struct PayloadPacket {
 }
 
 pub struct DisconnectPacket {}
+impl DisconnectPacket {
+    pub(crate) fn new() -> Packet {
+        Packet::Disconnect(Self {})
+    }
+}
 impl Bytes for DisconnectPacket {
     fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
         Ok(())
@@ -240,7 +257,7 @@ impl Packet {
         &self,
         out: &mut [u8],
         sequence: u64,
-        packet_key: &[u8; PRIVATE_KEY_SIZE],
+        packet_key: &Key,
         protocol_id: u64,
     ) -> Result<usize, NetcodeError> {
         let len = out.len();
@@ -288,10 +305,9 @@ impl Packet {
     }
     pub fn read(
         buf: &mut [u8], // buffer needs to be mutable to perform decryption in-place
-        packet_key: [u8; PRIVATE_KEY_SIZE],
         protocol_id: u64,
         timestamp: u64,
-        private_key: [u8; PRIVATE_KEY_SIZE],
+        key: Key,
         replay_protection: Option<&mut ReplayProtection>,
     ) -> Result<Self, NetcodeError> {
         let buf_len = buf.len();
@@ -307,7 +323,7 @@ impl Packet {
             // connection request packet: first byte should be 0x00
             let mut packet = RequestPacket::read_from(&mut cursor)?;
             packet.validate(protocol_id, timestamp)?;
-            packet.decrypt_token_data(private_key)?;
+            packet.decrypt_token_data(key)?;
             return Ok(Packet::Request(packet));
         }
         let (sequence_len, pkt_kind) = Packet::seq_len_and_pkt_kind(prefix_byte);
@@ -338,7 +354,7 @@ impl Packet {
             &mut cursor.get_mut()[decryption_start..decryption_end],
             Some(&aead),
             sequence,
-            &packet_key,
+            &key,
         )?;
         // make sure cursor position is at the start of the decrypted data, so we can read it into a valid packet
         cursor.set_position(decryption_start as u64);
@@ -427,7 +443,6 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
             private_key,
@@ -475,10 +490,9 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
+            packet_key,
             Some(&mut replay_protection),
         )
         .unwrap();
@@ -506,10 +520,9 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
+            packet_key,
             Some(&mut replay_protection),
         )
         .unwrap();
@@ -544,10 +557,9 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
+            packet_key,
             Some(&mut replay_protection),
         )
         .unwrap();
@@ -577,10 +589,9 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
+            packet_key,
             Some(&mut replay_protection),
         )
         .unwrap();
@@ -609,10 +620,9 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
+            packet_key,
             Some(&mut replay_protection),
         )
         .unwrap();

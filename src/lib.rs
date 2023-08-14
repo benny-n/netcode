@@ -11,3 +11,5 @@ mod socket;
 mod token;
 mod transceiver;
 mod utils;
+
+pub(crate) type Key = [u8; crate::consts::PRIVATE_KEY_SIZE];

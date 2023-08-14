@@ -8,7 +8,7 @@ use crate::{
     },
     crypto,
     error::NetcodeError,
-    server,
+    server, Key,
 };
 
 use std::{
@@ -131,8 +131,8 @@ pub(crate) struct ConnectTokenPrivate {
     pub(crate) client_id: u64,
     pub(crate) timeout_seconds: i32,
     pub(crate) server_addresses: AddressList,
-    pub(crate) client_to_server_key: [u8; PRIVATE_KEY_SIZE],
-    pub(crate) server_to_client_key: [u8; PRIVATE_KEY_SIZE],
+    pub(crate) client_to_server_key: Key,
+    pub(crate) server_to_client_key: Key,
     pub(crate) user_data: [u8; USER_DATA_SIZE],
 }
 
@@ -170,7 +170,7 @@ impl ConnectTokenPrivate {
         protocol_id: u64,
         expire_timestamp: u64,
         nonce: u64,
-        private_key: &[u8; PRIVATE_KEY_SIZE],
+        private_key: &Key,
     ) -> Result<[u8; Self::SIZE], NetcodeError> {
         let aead = Self::aead(protocol_id, expire_timestamp)?;
         let mut buf = [0u8; Self::SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
@@ -185,7 +185,7 @@ impl ConnectTokenPrivate {
         protocol_id: u64,
         expire_timestamp: u64,
         nonce: u64,
-        private_key: &[u8; PRIVATE_KEY_SIZE],
+        private_key: &Key,
     ) -> Result<Self, NetcodeError> {
         let aead = Self::aead(protocol_id, expire_timestamp)?;
         crypto::decrypt(encrypted, Some(&aead), nonce, private_key)?;
@@ -232,8 +232,8 @@ impl Bytes for ConnectTokenPrivate {
 }
 
 pub(crate) struct ChallengeToken {
-    client_id: u64,
-    user_data: [u8; USER_DATA_SIZE],
+    pub(crate) client_id: u64,
+    pub(crate) user_data: [u8; USER_DATA_SIZE],
 }
 
 impl ChallengeToken {
@@ -241,7 +241,7 @@ impl ChallengeToken {
     pub fn encrypt(
         &self,
         sequence: u64,
-        private_key: &[u8; PRIVATE_KEY_SIZE],
+        private_key: &Key,
     ) -> Result<[u8; Self::SIZE], NetcodeError> {
         let mut buf = [0u8; Self::SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
         let mut cursor = io::Cursor::new(&mut buf[..]);
@@ -253,7 +253,7 @@ impl ChallengeToken {
     pub fn decrypt(
         encrypted: &mut [u8; Self::SIZE],
         sequence: u64,
-        private_key: &[u8; PRIVATE_KEY_SIZE],
+        private_key: &Key,
     ) -> Result<Self, NetcodeError> {
         crypto::decrypt(encrypted, None, sequence, private_key)?;
         let mut cursor = io::Cursor::new(&encrypted[..]);
@@ -289,8 +289,8 @@ pub struct ConnectToken {
     private_data: [u8; ConnectTokenPrivate::SIZE],
     timeout_seconds: i32,
     server_addresses: AddressList,
-    client_to_server_key: [u8; PRIVATE_KEY_SIZE],
-    server_to_client_key: [u8; PRIVATE_KEY_SIZE],
+    client_to_server_key: Key,
+    server_to_client_key: Key,
 }
 
 pub struct ConnectTokenBuilder<A: ToSocketAddrs> {
@@ -301,7 +301,7 @@ pub struct ConnectTokenBuilder<A: ToSocketAddrs> {
     timeout_seconds: i32,
     public_server_addresses: A,
     internal_server_addresses: Option<A>,
-    private_key: Option<[u8; PRIVATE_KEY_SIZE]>,
+    private_key: Option<Key>,
     user_data: [u8; USER_DATA_SIZE],
 }
 
@@ -335,7 +335,7 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
         self
     }
     /// Sets the private key that will be used to encrypt the token.
-    pub fn private_key(mut self, private_key: [u8; PRIVATE_KEY_SIZE]) -> Self {
+    pub fn private_key(mut self, private_key: Key) -> Self {
         self.private_key = Some(private_key);
         self
     }
