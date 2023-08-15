@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{SocketAddr, ToSocketAddrs};
 
 use crate::bytes::Bytes;
 use crate::consts::{MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE};
@@ -16,6 +16,9 @@ use crate::token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTok
 use crate::transceiver::Transceiver;
 use crate::utils::{time_now_secs, time_now_secs_f64};
 use crate::{crypto, Key};
+
+// Re-export `AddressList`
+pub use crate::token::AddressList;
 
 pub type Result<T> = std::result::Result<T, NetcodeError>;
 
@@ -59,13 +62,13 @@ pub type ClientId = u64;
 pub type ClientIndex = usize;
 
 struct ConnectionCache {
-    // this somewhat mimics the original C implementation, but it's not exactly the same
+    // this somewhat mimics the original C implementation, but it's not exactly the same since `Connection` stores encryption mappings as well
     clients: FreeList<Connection, MAX_CLIENTS>,
 
     // we are not using a free-list here to not allocate memory up-front, since `ReplayProtection` is biggish (~2kb)
     replay_protection: HashMap<ClientIndex, ReplayProtection>,
 
-    // optimization for finding client_index from addr or id quickly
+    // optimization for finding client_index from addr or id quickly ( O(1)~* )
     addr_to_idx: HashMap<SocketAddr, ClientIndex>,
     id_to_idx: HashMap<ClientId, ClientIndex>,
 
@@ -104,7 +107,7 @@ impl ConnectionCache {
             last_receive_time: 0.0,
             send_key,
             receive_key,
-            sequence: 0, // TODO: check if this can simply be grabbed from the replay protection
+            sequence: 0,
         };
         let client_idx = self.clients.insert(conn);
         self.replay_protection
@@ -149,20 +152,100 @@ impl ConnectionCache {
         }
     }
 }
-
-pub struct ServerConfig {
+// type Ctx = Box<dyn std::any::Any + Send + Sync + 'static>;
+type Callback<S> = Box<dyn FnMut(ClientIndex, Option<&mut S>)>;
+/// Configuration for a server.
+///
+/// * `num_disconnect_packets` - The number of redundant disconnect packets that will be sent to a client when the server is disconnecting it.
+/// * `keep_alive_send_rate` - The rate at which keep alive packets will be sent to clients.
+/// * `on_connect` - A callback that will be called when a client is connected to the server.
+/// * `on_disconnect` - A callback that will be called when a client is disconnected from the server.
+///
+/// # Example
+/// ```
+/// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
+/// # let protocol_id = 0x123456789ABCDEF0;
+/// # let private_key = [42u8; 32];
+/// use std::sync::{Arc, Mutex};
+/// use netcode::server::{Server, ServerConfig};
+///
+/// let thread_safe_counter = Arc::new(Mutex::new(0));
+/// let cfg = ServerConfig::with_state(thread_safe_counter).on_connect(|idx, state| {
+///     if let Some(state) = state {
+///         let mut counter = state.lock().unwrap();
+///         *counter += 1;
+///         println!("client {} connected, counter: {}", idx, counter);
+///     }
+/// });
+/// let server = Server::with_config(addr, protocol_id, Some(private_key), cfg).unwrap();
+/// ```
+pub struct ServerConfig<S> {
     num_disconnect_packets: usize,
+    keep_alive_send_rate: f64,
+    state: Option<Box<S>>,
+    on_connect: Option<Callback<S>>,
+    on_disconnect: Option<Callback<S>>,
 }
-impl Default for ServerConfig {
+impl<S> Default for ServerConfig<S> {
     fn default() -> Self {
         Self {
             num_disconnect_packets: 10,
+            keep_alive_send_rate: PACKET_SEND_RATE,
+            state: None,
+            on_connect: None,
+            on_disconnect: None,
         }
     }
 }
 
-pub struct Server<T: Transceiver> {
-    public_addr: SocketAddr,
+impl<S> ServerConfig<S> {
+    /// Create a new, default server configuration.
+    pub fn new() -> ServerConfig<()> {
+        ServerConfig::<()>::default()
+    }
+    /// Create a new server configuration with a state that will be passed to the callbacks.
+    pub fn with_state(state: S) -> Self {
+        Self {
+            state: Some(Box::new(state)),
+            ..Self::default()
+        }
+    }
+    /// Set the number of redundant disconnect packets that will be sent to a client when the server is disconnecting it. <br>
+    /// The default is 10 packets.
+    pub fn num_disconnect_packets(mut self, num: usize) -> Self {
+        self.num_disconnect_packets = num;
+        self
+    }
+    /// Set the rate at which keep alive packets will be sent to clients. <br>
+    /// The default is 10 packets per second.
+    pub fn keep_alive_send_rate(mut self, rate: f64) -> Self {
+        self.keep_alive_send_rate = rate;
+        self
+    }
+    /// Provide a callback that will be called when a client is connected to the server. <br>
+    /// The callback will be called with the client index and the context that was provided (provide a `None` context if you don't need one).
+    ///
+    /// See [`ServerConfig`](ServerConfig) for an example.
+    pub fn on_connect<F>(mut self, cb: F) -> Self
+    where
+        F: FnMut(ClientIndex, Option<&mut S>) + 'static,
+    {
+        self.on_connect = Some(Box::new(cb));
+        self
+    }
+    /// Provide a callback that will be called when a client is disconnected from the server. <br>
+    /// The callback will be called with the client index and the context that was provided (provide a `None` context if you don't need one).
+    ///
+    /// See [`ServerConfig`](ServerConfig) for an example.
+    pub fn on_disconnect<F, T>(mut self, cb: F) -> Self
+    where
+        F: FnMut(ClientIndex, Option<&mut S>) + 'static,
+    {
+        self.on_disconnect = Some(Box::new(cb));
+        self
+    }
+}
+pub struct Server<T: Transceiver, S = ()> {
     transceiver: T,
     time: f64,
     private_key: Key,
@@ -174,15 +257,32 @@ pub struct Server<T: Transceiver> {
     protocol_id: u64,
     conn_cache: ConnectionCache,
     token_entries: HashMap<SocketAddr, TokenEntry>,
-    cfg: ServerConfig,
+    cfg: ServerConfig<S>,
 }
 
 impl Server<NetcodeSocket> {
-    pub fn new(addr: SocketAddr, protocol_id: u64, private_key: Option<Key>) -> Result<Self> {
+    /// Create a new, stateless server a default configuration.
+    ///
+    /// For a stateful server, use [`Server::with_config`](Server::with_config) and provide a state in the [`ServerConfig`](ServerConfig).
+    ///
+    /// # Example
+    /// ```
+    /// use netcode::server::Server;
+    /// use std::net::{SocketAddr, Ipv4Addr};
+    ///
+    /// let private_key = [42u8; 32]; // TODO: generate a real private key
+    /// let protocol_id = 0x123456789ABCDEF0;
+    /// let addr = "127.0.0.1:40000".parse().unwrap();
+    /// let server = Server::new(addr, protocol_id, Some(private_key)).unwrap();
+    /// ```
+    pub fn new(
+        bind_addr: SocketAddr,
+        protocol_id: u64,
+        private_key: Option<Key>,
+    ) -> Result<Server<NetcodeSocket, ()>> {
         let time = time_now_secs_f64()?;
-        let server = Self {
-            public_addr: addr,
-            transceiver: NetcodeSocket::new((Ipv4Addr::UNSPECIFIED, addr.port()))?,
+        let server: Server<_, ()> = Server {
+            transceiver: NetcodeSocket::new(bind_addr)?,
             time,
             private_key: private_key.unwrap_or(crypto::generate_key()?),
             max_clients: MAX_CLIENTS,
@@ -195,7 +295,53 @@ impl Server<NetcodeSocket> {
             token_entries: HashMap::new(),
             cfg: ServerConfig::default(),
         };
-        log::info!("server started on {}", addr);
+        log::info!("server started on {}", bind_addr);
+        Ok(server)
+    }
+}
+
+impl<S> Server<NetcodeSocket, S> {
+    /// Create a new with a custom configuration.
+    ///
+    /// State can be provided in the [`ServerConfig`](ServerConfig).
+    ///
+    /// # Example
+    /// ```
+    /// use netcode::server::{Server, ServerConfig};
+    /// use std::net::{SocketAddr, Ipv4Addr};
+    ///
+    /// let private_key = [42u8; 32]; // TODO: generate a real private key
+    /// let protocol_id = 0x123456789ABCDEF0;
+    /// let addr = "127.0.0.1:40000".parse().unwrap();
+    /// let cfg = ServerConfig::with_state(42).on_connect(|idx, state| {
+    ///     if let Some(state) = state {
+    ///         assert_eq!(*state, 42);
+    ///     }
+    /// });
+    /// let server = Server::with_config(addr, protocol_id, Some(private_key), cfg).unwrap();
+    /// ```
+    pub fn with_config(
+        bind_addr: SocketAddr,
+        protocol_id: u64,
+        private_key: Option<Key>,
+        cfg: ServerConfig<S>,
+    ) -> Result<Self> {
+        let time = time_now_secs_f64()?;
+        let server = Server {
+            transceiver: NetcodeSocket::new(bind_addr)?,
+            time,
+            private_key: private_key.unwrap_or(crypto::generate_key()?),
+            max_clients: MAX_CLIENTS,
+            protocol_id,
+            sequence: 1 << 63,
+            token_sequence: 0,
+            challenge_sequence: 0,
+            challenge_key: crypto::generate_key()?,
+            conn_cache: ConnectionCache::new(time),
+            token_entries: HashMap::new(),
+            cfg,
+        };
+        log::info!("server started on {}", bind_addr);
         Ok(server)
     }
 }
@@ -211,7 +357,17 @@ impl Server<NetcodeSocket> {
 //     }
 // }
 
-impl<T: Transceiver> Server<T> {
+impl<T: Transceiver, S> Server<T, S> {
+    fn on_connect(&mut self, client_idx: ClientIndex) {
+        if let Some(cb) = self.cfg.on_connect.as_mut() {
+            cb(client_idx, self.cfg.state.as_mut().map(|s| s.as_mut()))
+        }
+    }
+    fn on_disconnect(&mut self, client_idx: ClientIndex) {
+        if let Some(cb) = self.cfg.on_disconnect.as_mut() {
+            cb(client_idx, self.cfg.state.as_mut().map(|s| s.as_mut()))
+        }
+    }
     fn touch_client(&mut self, client_idx: Option<ClientIndex>) -> Result<()> {
         let Some(idx) = client_idx else {
             return Ok(());
@@ -285,6 +441,7 @@ impl<T: Transceiver> Server<T> {
         for _ in 0..self.cfg.num_disconnect_packets {
             self.send_to_client(DisconnectPacket::create(), client_idx)?;
         }
+        self.on_disconnect(client_idx);
         self.conn_cache.remove(client_idx);
         Ok(())
     }
@@ -313,7 +470,7 @@ impl<T: Transceiver> Server<T> {
         if !token
             .server_addresses
             .iter()
-            .any(|addr| addr == self.public_addr)
+            .any(|addr| addr == self.transceiver.addr())
         {
             log::debug!(
                 "server ignored connection request. server address not in connect token whitelist"
@@ -427,6 +584,7 @@ impl<T: Transceiver> Server<T> {
             from_addr,
             self.conn_cache.clients[idx].send_key,
         )?;
+        self.on_connect(idx);
         Ok(())
     }
     fn check_for_timeouts(&mut self) -> Result<()> {
@@ -439,6 +597,7 @@ impl<T: Transceiver> Server<T> {
             }
             if client.last_receive_time + (client.timeout as f64) < self.time {
                 log::debug!("server timed out client {idx}");
+                self.on_disconnect(idx);
                 self.conn_cache.remove(idx);
             }
         }
@@ -452,7 +611,7 @@ impl<T: Transceiver> Server<T> {
             if !client.is_connected() {
                 continue;
             }
-            if client.last_send_time + PACKET_SEND_RATE < self.time {
+            if client.last_send_time + self.cfg.keep_alive_send_rate < self.time {
                 log::trace!("server sent connection keep alive packet to client {idx}");
                 self.send_to_client(
                     KeepAlivePacket::create(idx as i32, self.max_clients as i32),
@@ -462,40 +621,45 @@ impl<T: Transceiver> Server<T> {
         }
         Ok(())
     }
-    /// Generates a connect token builder for a given server address, protocol ID, and client ID.
+    /// Creates a connect token builder for a given public server address and client ID.
     /// The builder can be used to configure the token with additional data before generating the final token.
     /// The `generate` method must be called on the builder to generate the final token.
     ///
     /// # Example
     ///
     /// ```
-    /// # use netcode::{Server, AddressList};
-    /// # use std::net::ToSocketAddrs;
+    /// # use netcode::server::{Server, ServerConfig};
+    /// # use std::net::{SocketAddr, Ipv4Addr};
     ///  
-    /// let my_secret_private_key = [0u8; 32]; // TODO: generate a real private key
-    /// let public_server_addr = "google.com:12345".to_socket_addrs().unwrap().next().unwrap();
-    /// let mut server = Server::new(public_server_addr, 0x11223344, Some(my_secret_private_key)).unwrap();
+    /// let private_key = [42u8; 32]; // TODO: generate a real private key
+    /// let protocol_id = 0x123456789ABCDEF0;
+    /// let bind_addr = "0.0.0.0:12345".parse().unwrap();
+    /// let mut server = Server::new(bind_addr, protocol_id, Some(private_key)).unwrap();
     ///
     /// let client_id = 123u64;
-    /// let token = server
-    ///     .token(client_id)
-    ///     .unwrap()
-    ///     .internal_address_list(AddressList::new("127.0.0.1:9001").unwrap())
-    ///     .token_expire_secs(30) // default is -1, which means the token never expires
-    ///     .connection_timeout_secs(15) // default is -1 which means the connection never times out
+    /// let public_addr = "example.com:12345"; // TODO: replace with your public address
+    /// let token = server.token(public_addr, client_id)
+    ///     .expire_seconds(60)  // optional - default is 30 seconds. negative values would make the token never expire.
+    ///     .timeout_seconds(-1) // optional - default is 15 seconds. negative values would make the token never timeout.
     ///     .generate()
     ///     .unwrap();
     /// ```
-    pub fn token(&mut self, client_id: u64) -> Result<ConnectTokenBuilder<SocketAddr>> {
+    ///
+    /// See [`ConnectTokenBuilder`](ConnectTokenBuilder) for more options.
+    pub fn token(
+        &mut self,
+        public_addr: impl ToSocketAddrs,
+        client_id: u64,
+    ) -> ConnectTokenBuilder<impl ToSocketAddrs> {
         let token_builder = ConnectToken::build(
-            self.public_addr,
+            public_addr,
             self.protocol_id,
             client_id,
             self.token_sequence,
         )
         .private_key(self.private_key);
         self.token_sequence += 1;
-        Ok(token_builder)
+        token_builder
     }
     pub fn update(&mut self, time: f64) -> Result<()> {
         self.time = time;

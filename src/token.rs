@@ -268,7 +268,7 @@ impl Bytes for ChallengeToken {
     }
 }
 
-#[derive(Debug)]
+// TODO: document
 pub struct ConnectToken {
     version_info: [u8; NETCODE_VERSION.len()],
     protocol_id: u64,
@@ -282,6 +282,7 @@ pub struct ConnectToken {
     server_to_client_key: Key,
 }
 
+// TODO: document
 pub struct ConnectTokenBuilder<A: ToSocketAddrs> {
     protocol_id: u64,
     client_id: u64,
@@ -309,12 +310,12 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
         }
     }
     /// Sets the time in seconds that the token will be valid for.
-    pub fn token_expire_secs(mut self, expire_seconds: i32) -> Self {
+    pub fn expire_seconds(mut self, expire_seconds: i32) -> Self {
         self.expire_seconds = expire_seconds;
         self
     }
     /// Sets the time in seconds that a connection will be kept alive without any packets being received.
-    pub fn connection_timeout_secs(mut self, timeout_seconds: i32) -> Self {
+    pub fn timeout_seconds(mut self, timeout_seconds: i32) -> Self {
         self.timeout_seconds = timeout_seconds;
         self
     }
@@ -328,15 +329,16 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
         self.private_key = Some(private_key);
         self
     }
-    /// Sets the internal server addresses in the private data of the token, the server will bind to one of these addresses (usually the first one).
-    /// If this field is not set, the public server addresses provided when creating the builder will be used instead.
+    /// Sets the *internal* server addresses in the private data of the token. <br>
+    /// If this field is not set, the *public* server addresses provided when creating the builder will be used instead.
     ///
-    /// This is useful for when you want to bind your server to a local address that is not accessible from the internet.
+    /// This is useful for when you bind your server to a local address that is not accessible from the internet, <br>
+    /// but you want to provide a public address that is accessible to the client.
     ///
-    /// The client will still use the public server addresses to connect to the server.
-    pub fn internal_address_list(mut self, internal_addresses: AddressList) -> Self {
-        self.internal_server_addresses = Some(internal_addresses);
-        self
+    /// The client will always use the *public* server addresses list to connect to the server, never the *internal* ones.
+    pub fn internal_address_list(mut self, internal_addresses: A) -> Result<Self, NetcodeError> {
+        self.internal_server_addresses = Some(AddressList::new(internal_addresses)?);
+        Ok(self)
     }
     /// Generates the token and consumes the builder.
     pub fn generate(self) -> Result<ConnectToken, NetcodeError> {
@@ -623,9 +625,10 @@ mod tests {
         let connect_token = ConnectToken::build(server_addresses, protocol_id, client_id, nonce)
             .private_key([0x42; PRIVATE_KEY_SIZE])
             .user_data([0x11; USER_DATA_SIZE])
-            .connection_timeout_secs(5)
-            .token_expire_secs(6)
-            .internal_address_list(AddressList::new("0.0.0.0:0").unwrap())
+            .timeout_seconds(5)
+            .expire_seconds(6)
+            .internal_address_list("0.0.0.0:0")
+            .expect("failed to parse address")
             .generate()
             .unwrap();
 

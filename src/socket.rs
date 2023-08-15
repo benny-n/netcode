@@ -34,6 +34,10 @@ impl NetcodeSocket {
 impl Transceiver for NetcodeSocket {
     type Error = Error;
 
+    fn addr(&self) -> SocketAddr {
+        self.0.local_addr().expect("address should be bound")
+    }
+
     fn recv(&self, buf: &mut [u8]) -> Result<(usize, Option<SocketAddr>)> {
         match self.0.recv_from(buf) {
             Ok((len, addr)) => Ok((len, Some(addr))),

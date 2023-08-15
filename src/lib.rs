@@ -5,11 +5,11 @@ mod error;
 mod free_list;
 mod packet;
 mod replay;
-mod server;
+pub mod server;
 #[cfg(test)]
 mod simulator;
 mod socket;
-mod token;
+pub mod token;
 mod transceiver;
 mod utils;
 
