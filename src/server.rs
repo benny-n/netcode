@@ -1,42 +1,26 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::f32::consts::E;
-use std::io::{self};
-use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
-
-use socket2::{Domain, Protocol, Socket, Type};
+use std::net::{Ipv4Addr, SocketAddr};
 
 use crate::bytes::Bytes;
-use crate::consts::{
-    MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PRIVATE_KEY_SIZE,
-    SERVER_SOCKET_RECV_BUF_SIZE, SERVER_SOCKET_SEND_BUF_SIZE,
-};
+use crate::consts::{MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE};
 use crate::error::NetcodeError;
 use crate::free_list::FreeList;
 use crate::packet::{
-    ChallengePacket, DeniedPacket, DisconnectPacket, KeepAlivePacket, Packet, RequestPacket,
-    ResponsePacket,
+    ChallengePacket, DeniedPacket, DisconnectPacket, KeepAlivePacket, Packet, PayloadPacket,
+    RequestPacket, ResponsePacket,
 };
 use crate::replay::ReplayProtection;
 use crate::socket::NetcodeSocket;
-use crate::token::{ChallengeToken, ConnectTokenPrivate};
+use crate::token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate};
 use crate::transceiver::Transceiver;
 use crate::utils::{time_now_secs, time_now_secs_f64};
 use crate::{crypto, Key};
 
 pub type Result<T> = std::result::Result<T, NetcodeError>;
 
-// int num_encryption_mappings;
-// int timeout[NETCODE_MAX_ENCRYPTION_MAPPINGS];
-// double expire_time[NETCODE_MAX_ENCRYPTION_MAPPINGS];
-// double last_access_time[NETCODE_MAX_ENCRYPTION_MAPPINGS];
-// struct netcode_address_t address[NETCODE_MAX_ENCRYPTION_MAPPINGS];
-// int client_index[NETCODE_MAX_ENCRYPTION_MAPPINGS];
-// uint8_t send_key[NETCODE_KEY_BYTES*NETCODE_MAX_ENCRYPTION_MAPPINGS];
-// uint8_t receive_key[NETCODE_KEY_BYTES*NETCODE_MAX_ENCRYPTION_MAPPINGS];
-
 struct TokenEntry {
-    time: f64,
+    _time: f64,
     mac: [u8; 16],
 }
 
@@ -149,31 +133,19 @@ impl ConnectionCache {
             (idx, &mut self.clients[idx])
         })
     }
-    fn find_by_addr(&mut self, addr: SocketAddr) -> Option<&mut Connection> {
-        self.addr_to_idx
-            .get(&addr)
-            .map(|&idx| &mut self.clients[idx])
-    }
     fn is_connection_expired(conn: &Connection, time: f64) -> bool {
         (0.0..time).contains(&conn.expire_time)
             || (0.0..time - conn.last_access_time).contains(&(conn.timeout as f64))
     }
-    fn is_expired(&self, client_id: u64) -> bool {
-        self.id_to_idx
-            .get(&client_id)
-            .is_some_and(|&idx| Self::is_connection_expired(&self.clients[idx], self.time))
-    }
     fn update(&mut self, time: f64) {
         self.time = time;
-        let expired_indices = self
-            .clients
-            .iter_mut()
-            .enumerate()
-            .filter(|(_, conn)| Self::is_connection_expired(&conn, time))
-            .map(|(idx, _)| idx)
-            .collect::<Vec<_>>();
-        for idx in expired_indices {
-            self.remove(idx);
+        for idx in 0..MAX_CLIENTS {
+            let Some(conn) = self.clients.get_mut(idx) else {
+                continue;
+            };
+            if Self::is_connection_expired(conn, time) {
+                self.remove(idx);
+            }
         }
     }
 }
@@ -196,6 +168,7 @@ pub struct Server<T: Transceiver> {
     private_key: Key,
     max_clients: usize,
     sequence: u64,
+    token_sequence: u64,
     challenge_sequence: u64,
     challenge_key: Key,
     protocol_id: u64,
@@ -207,20 +180,23 @@ pub struct Server<T: Transceiver> {
 impl Server<NetcodeSocket> {
     pub fn new(addr: SocketAddr, protocol_id: u64, private_key: Option<Key>) -> Result<Self> {
         let time = time_now_secs_f64()?;
-        Ok(Self {
+        let server = Self {
             public_addr: addr,
-            transceiver: NetcodeSocket::new((Ipv4Addr::UNSPECIFIED, 0))?,
+            transceiver: NetcodeSocket::new((Ipv4Addr::UNSPECIFIED, addr.port()))?,
             time,
             private_key: private_key.unwrap_or(crypto::generate_key()?),
             max_clients: MAX_CLIENTS,
             protocol_id,
-            sequence: 0,
+            sequence: 1 << 63,
+            token_sequence: 0,
             challenge_sequence: 0,
             challenge_key: crypto::generate_key()?,
             conn_cache: ConnectionCache::new(time),
             token_entries: HashMap::new(),
             cfg: ServerConfig::default(),
-        })
+        };
+        log::info!("server started on {}", addr);
+        Ok(server)
     }
 }
 
@@ -245,12 +221,17 @@ impl<T: Transceiver> Server<T> {
         };
         conn.last_receive_time = self.time;
         if !conn.is_confirmed() {
-            log::trace!("server confirmed connection with client {idx}");
+            log::debug!("server confirmed connection with client {idx}");
             conn.confirm();
         }
         Ok(())
     }
-    fn process_packet(&mut self, addr: SocketAddr, packet: Packet) -> Result<()> {
+    fn process_packet(
+        &mut self,
+        buf: &mut [u8],
+        addr: SocketAddr,
+        packet: Packet,
+    ) -> Result<usize> {
         let client_idx = self.conn_cache.get_client_idx(addr);
         log::trace!(
             "server received {} from {}",
@@ -260,113 +241,73 @@ impl<T: Transceiver> Server<T> {
                 .unwrap_or_else(|| addr.to_string())
         );
         match packet {
-            Packet::Request(packet) => self.process_connection_request(addr, packet),
-            Packet::Response(packet) => self.process_connection_response(addr, packet),
-            Packet::KeepAlive(_) => self.touch_client(client_idx),
-            Packet::Payload(_) => {
+            Packet::Request(packet) => self.process_connection_request(addr, packet).map(|_| 0),
+            Packet::Response(packet) => self.process_connection_response(addr, packet).map(|_| 0),
+            Packet::KeepAlive(_) => self.touch_client(client_idx).map(|_| 0),
+            Packet::Payload(packet) => {
                 self.touch_client(client_idx)?;
-                todo!("process payload packet")
+                buf[..packet.payload.len()].copy_from_slice(&packet.payload[..]);
+                Ok(packet.payload.len())
             }
             Packet::Disconnect(_) => {
                 if let Some(idx) = client_idx {
-                    self.disconnect_client(idx)?;
+                    log::debug!("server disconnected client {}", idx);
+                    self.conn_cache.remove(idx);
                 }
-                Ok(())
+                Ok(0)
             }
             _ => Err(NetcodeError::InvalidPacket)?,
         }
     }
-    pub fn update(&mut self, time: f64) -> Result<()> {
-        self.time = time;
-        Ok(())
-    }
-    pub fn recv(&mut self, buf: &mut [u8]) -> Result<()> {
-        let now = time_now_secs()?;
-        let (size, addr) = self.transceiver.recv(buf).map_err(|e| e.into())?;
-        let Some(addr) = addr else {
-            // No packet received
-            return Ok(());
-        };
-        if size <= 1 {
-            // Too small to be a packet
-            return Ok(());
-        }
-        let (key, replay_protection) = match self.conn_cache.addr_to_idx.get(&addr) {
-            Some(client_idx) => (
-                self.conn_cache.clients[*client_idx].receive_key,
-                self.conn_cache.replay_protection.get_mut(client_idx),
-            ),
-            None if Packet::is_connection_request(buf[0]) => (self.private_key, None),
-            None => {
-                // Not a connection request packet, and not a known client, so ignore
-                log::trace!(
-                    "server ignored non-connection-request packet from unknown address {addr}"
-                );
-                return Ok(());
-            }
-        };
-        let packet = Packet::read(
-            &mut buf[..size],
-            self.protocol_id,
-            now,
-            key,
-            replay_protection,
-        )?;
-        self.process_packet(addr, packet)?;
-        Ok(())
-    }
     fn send_to_addr(&mut self, packet: Packet, addr: SocketAddr, key: Key) -> Result<()> {
         let mut buf = [0u8; MAX_PKT_BUF_SIZE];
-        packet.write(&mut buf, self.sequence, &key, self.protocol_id)?;
-        self.transceiver.send(&buf, addr).map_err(|e| e.into())?;
+        let size = packet.write(&mut buf, self.sequence, &key, self.protocol_id)?;
+        self.transceiver
+            .send(&buf[..size], addr)
+            .map_err(|e| e.into())?;
         self.sequence += 1;
         Ok(())
     }
     fn send_to_client(&mut self, packet: Packet, idx: ClientIndex) -> Result<()> {
         let mut buf = [0u8; MAX_PKT_BUF_SIZE];
-        let Some(conn) = self.conn_cache.clients.get_mut(idx) else {
-            log::trace!("client connection not found");
-            return Ok(());
-        };
-        packet.write(&mut buf, conn.sequence, &conn.send_key, self.protocol_id)?;
+        let conn = &mut self.conn_cache.clients[idx];
+        let size = packet.write(&mut buf, conn.sequence, &conn.send_key, self.protocol_id)?;
         self.transceiver
-            .send(&buf, conn.addr)
+            .send(&buf[..size], conn.addr)
             .map_err(|e| e.into())?;
+        conn.last_access_time = self.time;
         conn.last_send_time = self.time;
         conn.sequence += 1;
         Ok(())
     }
-    fn disconnect_client(&mut self, client_idx: usize) -> Result<()> {
-        log::trace!("server disconnected client {}", client_idx);
+    pub fn disconnect_client(&mut self, client_idx: usize) -> Result<()> {
+        log::debug!("server disconnected client {}", client_idx);
         for _ in 0..self.cfg.num_disconnect_packets {
             self.send_to_client(DisconnectPacket::create(), client_idx)?;
         }
         self.conn_cache.remove(client_idx);
         Ok(())
     }
-    fn disconnect_all(&mut self) -> Result<()> {
-        log::trace!("server disconnecting all clients");
-        let disconnect_indices = self
-            .conn_cache
-            .clients
-            .iter()
-            .enumerate()
-            .filter(|(_, conn)| conn.is_connected())
-            .map(|(idx, _)| idx)
-            .collect::<Vec<_>>();
-        for idx in disconnect_indices {
-            self.disconnect_client(idx)?;
+    pub fn disconnect_all(&mut self) -> Result<()> {
+        log::debug!("server disconnecting all clients");
+        for idx in 0..MAX_CLIENTS {
+            let Some(conn) = self.conn_cache.clients.get_mut(idx) else {
+                continue;
+            };
+            if conn.is_connected() {
+                self.disconnect_client(idx)?;
+            }
         }
         Ok(())
     }
     fn process_connection_request(
         &mut self,
-        from: SocketAddr,
+        from_addr: SocketAddr,
         mut packet: RequestPacket,
     ) -> Result<()> {
         let mut reader = std::io::Cursor::new(&mut packet.token_data[..]);
         let Ok(token) = ConnectTokenPrivate::read_from(&mut reader) else {
-            log::trace!("server ignored connection request. failed to read connect token");
+            log::debug!("server ignored connection request. failed to read connect token");
             return Ok(());
         };
         if !token
@@ -374,17 +315,17 @@ impl<T: Transceiver> Server<T> {
             .iter()
             .any(|addr| addr == self.public_addr)
         {
-            log::trace!(
+            log::debug!(
                 "server ignored connection request. server address not in connect token whitelist"
             );
             return Ok(());
         };
-        if self.conn_cache.addr_to_idx.get(&from).is_some() {
-            log::trace!("server ignored connection request. a client with this address is already connected");
+        if self.conn_cache.addr_to_idx.get(&from_addr).is_some() {
+            log::debug!("server ignored connection request. a client with this address is already connected");
             return Ok(());
         };
         if self.conn_cache.find_by_id(token.client_id).is_some() {
-            log::trace!(
+            log::debug!(
                 "server ignored connection request. a client with this id is already connected"
             );
             return Ok(());
@@ -393,19 +334,33 @@ impl<T: Transceiver> Server<T> {
             [ConnectTokenPrivate::SIZE - MAC_SIZE..ConnectTokenPrivate::SIZE]
             .try_into()
             .map_err(|_| NetcodeError::InvalidPacket)?;
-        let token_entry = self.token_entries.entry(from).or_insert(TokenEntry {
-            time: self.time,
-            mac,
-        });
-        if token_entry.mac == mac {
-            log::trace!("server ignored connection request. connect token has already been used");
-            return Ok(());
+        match self.token_entries.entry(from_addr) {
+            Entry::Occupied(entry) if entry.get().mac == mac => {
+                log::debug!(
+                    "server ignored connection request. connect token has already been used"
+                );
+                return Ok(());
+            }
+            Entry::Occupied(mut entry) => {
+                entry.insert(TokenEntry {
+                    _time: self.time,
+                    mac,
+                });
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(TokenEntry {
+                    _time: self.time,
+                    mac,
+                });
+            }
         }
-        token_entry.time = self.time;
-        token_entry.mac = mac;
         if self.conn_cache.clients.len() >= self.max_clients {
-            log::trace!("server denied connection request. server is full");
-            self.send_to_addr(DeniedPacket::create(), from, token.server_to_client_key)?;
+            log::debug!("server denied connection request. server is full");
+            self.send_to_addr(
+                DeniedPacket::create(),
+                from_addr,
+                token.server_to_client_key,
+            )?;
             return Ok(());
         };
         let expire_time = if token.timeout_seconds >= 0 {
@@ -415,7 +370,7 @@ impl<T: Transceiver> Server<T> {
         };
         self.conn_cache.add(
             token.client_id,
-            from,
+            from_addr,
             token.timeout_seconds,
             expire_time,
             token.server_to_client_key,
@@ -426,37 +381,37 @@ impl<T: Transceiver> Server<T> {
             user_data: token.user_data,
         }
         .encrypt(self.challenge_sequence, &self.challenge_key) else {
-            log::trace!("server ignored connection request. failed to encrypt challenge token");
+            log::debug!("server ignored connection request. failed to encrypt challenge token");
             return Ok(());
         };
         self.send_to_addr(
             ChallengePacket::create(self.challenge_sequence, challenge_token_encrypted),
-            from,
+            from_addr,
             token.server_to_client_key,
         )?;
-        log::trace!("server sent connection challenge packet");
+        log::debug!("server sent connection challenge packet");
         self.challenge_sequence += 1;
         Ok(())
     }
     fn process_connection_response(
         &mut self,
-        from: SocketAddr,
+        from_addr: SocketAddr,
         mut packet: ResponsePacket,
     ) -> Result<()> {
         let Ok(challenge_token) = ChallengeToken::decrypt(&mut packet.token, packet.sequence, &self.challenge_key) else {
-            log::trace!("server ignored connection response. failed to decrypt challenge token");
+            log::debug!("server ignored connection response. failed to decrypt challenge token");
             return Ok(());
         };
         let num_clients = self.conn_cache.clients.len();
         let Some((idx, _)) = self.conn_cache.find_by_id(challenge_token.client_id) else {
-            log::trace!("server ignored connection response. no packet send key");
+            log::debug!("server ignored connection response. no packet send key");
             return Ok(());
         };
         if num_clients >= self.max_clients {
-            log::trace!("server denied connection request. server is full");
+            log::debug!("server denied connection request. server is full");
             self.send_to_addr(
                 DeniedPacket::create(),
-                from,
+                from_addr,
                 self.conn_cache.clients[idx].send_key,
             )?;
             return Ok(());
@@ -469,12 +424,143 @@ impl<T: Transceiver> Server<T> {
         log::debug!("server accepted client {}", challenge_token.client_id);
         self.send_to_addr(
             KeepAlivePacket::create(idx as i32, self.max_clients as i32),
-            from,
+            from_addr,
             self.conn_cache.clients[idx].send_key,
         )?;
         Ok(())
     }
-    pub fn check_for_timeouts(&mut self) -> Result<()> {
-        todo!()
+    fn check_for_timeouts(&mut self) -> Result<()> {
+        for idx in 0..MAX_CLIENTS {
+            let Some(client) = self.conn_cache.clients.get_mut(idx) else {
+                continue;
+            };
+            if !client.is_connected() {
+                continue;
+            }
+            if client.last_receive_time + (client.timeout as f64) < self.time {
+                log::debug!("server timed out client {idx}");
+                self.conn_cache.remove(idx);
+            }
+        }
+        Ok(())
+    }
+    fn send_keep_alive_packets(&mut self) -> Result<()> {
+        for idx in 0..MAX_CLIENTS {
+            let Some(client) = self.conn_cache.clients.get_mut(idx) else {
+                continue;
+            };
+            if !client.is_connected() {
+                continue;
+            }
+            if client.last_send_time + PACKET_SEND_RATE < self.time {
+                log::trace!("server sent connection keep alive packet to client {idx}");
+                self.send_to_client(
+                    KeepAlivePacket::create(idx as i32, self.max_clients as i32),
+                    idx,
+                )?;
+            }
+        }
+        Ok(())
+    }
+    /// Generates a connect token builder for a given server address, protocol ID, and client ID.
+    /// The builder can be used to configure the token with additional data before generating the final token.
+    /// The `generate` method must be called on the builder to generate the final token.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use netcode::{Server, AddressList};
+    /// # use std::net::ToSocketAddrs;
+    ///  
+    /// let my_secret_private_key = [0u8; 32]; // TODO: generate a real private key
+    /// let public_server_addr = "google.com:12345".to_socket_addrs().unwrap().next().unwrap();
+    /// let mut server = Server::new(public_server_addr, 0x11223344, Some(my_secret_private_key)).unwrap();
+    ///
+    /// let client_id = 123u64;
+    /// let token = server
+    ///     .token(client_id)
+    ///     .unwrap()
+    ///     .internal_address_list(AddressList::new("127.0.0.1:9001").unwrap())
+    ///     .token_expire_secs(30) // default is -1, which means the token never expires
+    ///     .connection_timeout_secs(15) // default is -1 which means the connection never times out
+    ///     .generate()
+    ///     .unwrap();
+    /// ```
+    pub fn token(&mut self, client_id: u64) -> Result<ConnectTokenBuilder<SocketAddr>> {
+        let token_builder = ConnectToken::build(
+            self.public_addr,
+            self.protocol_id,
+            client_id,
+            self.token_sequence,
+        )
+        .private_key(self.private_key);
+        self.token_sequence += 1;
+        Ok(token_builder)
+    }
+    pub fn update(&mut self, time: f64) -> Result<()> {
+        self.time = time;
+        self.conn_cache.update(self.time);
+        self.check_for_timeouts()?;
+        self.send_keep_alive_packets()?;
+        Ok(())
+    }
+    pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let now = time_now_secs()?;
+        let (size, addr) = self.transceiver.recv(buf).map_err(|e| e.into())?;
+        let Some(addr) = addr else {
+            // No packet received
+            return Ok(0);
+        };
+        if size <= 1 {
+            // Too small to be a packet
+            return Ok(0);
+        }
+        let (key, replay_protection) = match self.conn_cache.addr_to_idx.get(&addr) {
+            Some(client_idx) => (
+                self.conn_cache.clients[*client_idx].receive_key,
+                self.conn_cache.replay_protection.get_mut(client_idx),
+            ),
+            None if Packet::is_connection_request(buf[0]) => (self.private_key, None),
+            None => {
+                // Not a connection request packet, and not a known client, so ignore
+                log::debug!(
+                    "server ignored non-connection-request packet from unknown address {addr}"
+                );
+                return Ok(0);
+            }
+        };
+        let packet = Packet::read(
+            &mut buf[..size],
+            self.protocol_id,
+            now,
+            key,
+            replay_protection,
+        )?;
+
+        self.process_packet(buf, addr, packet)
+    }
+    pub fn send(&mut self, buf: &[u8], client_idx: ClientIndex) -> Result<()> {
+        if buf.len() > MAX_PAYLOAD_SIZE {
+            return Err(NetcodeError::PacketSizeExceeded(buf.len()));
+        }
+        let Some(conn) = self.conn_cache.clients.get_mut(client_idx) else {
+            return Err(NetcodeError::ClientNotFound);
+        };
+        if !conn.connected {
+            // client is not yet connected, but this shouldn't be an error as the client may be sending a connection request
+            log::debug!(
+                "server ignored send to client {client_idx} because it is not yet connected"
+            );
+            return Ok(());
+        }
+        if !conn.confirmed {
+            // send a keep alive packet to the client to confirm the connection
+            self.send_to_client(
+                KeepAlivePacket::create(client_idx as i32, self.max_clients as i32),
+                client_idx,
+            )?;
+        }
+        let packet = PayloadPacket::create(buf);
+        self.send_to_client(packet, client_idx)
     }
 }

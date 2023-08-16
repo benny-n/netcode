@@ -3,16 +3,6 @@ pub struct FreeList<T: Sized, const N: usize> {
     inner: [Option<T>; N],
 }
 
-pub struct FreeListIter<'a, T: Sized + Copy, const N: usize> {
-    free_list: &'a FreeList<T, N>,
-    index: usize,
-}
-
-pub struct FreeListIterMut<'a, T: Sized + Copy, const N: usize> {
-    free_list: &'a mut FreeList<T, N>,
-    index: usize,
-}
-
 impl<T: Sized + Copy, const N: usize> FreeList<T, N> {
     pub fn new() -> Self {
         Self {
@@ -44,8 +34,8 @@ impl<T: Sized, const N: usize> FreeList<T, N> {
     pub fn remove(&mut self, index: usize) {
         if self.inner[index].is_some() {
             self.len -= 1;
+            self.inner[index] = None;
         }
-        self.inner[index] = None;
     }
 
     pub fn get(&self, index: usize) -> Option<&T> {
@@ -54,37 +44,6 @@ impl<T: Sized, const N: usize> FreeList<T, N> {
 
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         self.inner.get_mut(index).and_then(Option::as_mut)
-    }
-
-    pub fn iter(&self) -> FreeListIter<T, N>
-    where
-        T: Copy,
-    {
-        FreeListIter {
-            free_list: self,
-            index: 0,
-        }
-    }
-
-    pub fn iter_mut(&mut self) -> FreeListIterMut<T, N>
-    where
-        T: Copy,
-    {
-        FreeListIterMut {
-            free_list: self,
-            index: 0,
-        }
-    }
-
-    pub fn into_iter(self) -> impl Iterator<Item = T>
-    where
-        T: Copy,
-    {
-        self.inner
-            .iter()
-            .filter_map(|x| x.as_ref().copied())
-            .collect::<Vec<_>>()
-            .into_iter()
     }
 }
 
@@ -99,35 +58,5 @@ impl<T: Sized, const N: usize> std::ops::Index<usize> for FreeList<T, N> {
 impl<T: Sized, const N: usize> std::ops::IndexMut<usize> for FreeList<T, N> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         self.get_mut(index).expect("index out of bounds")
-    }
-}
-
-impl<'a, T: Sized + Copy, const N: usize> Iterator for FreeListIter<'a, T, N> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.index < N {
-            let index = self.index;
-            self.index += 1;
-            if let Some(value) = self.free_list.get(index) {
-                return Some(*value);
-            }
-        }
-        None
-    }
-}
-
-impl<'a, T: Sized + Copy, const N: usize> Iterator for FreeListIterMut<'a, T, N> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.index < N {
-            let index = self.index;
-            self.index += 1;
-            if let Some(value) = self.free_list.get(index) {
-                return Some(*value);
-            }
-        }
-        None
     }
 }

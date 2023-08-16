@@ -18,4 +18,8 @@ pub enum NetcodeError {
     SystemTimeError(#[from] std::time::SystemTimeError),
     #[error("empty packet")]
     EmptyPacket,
+    #[error("packet size exceeded, got {0} but max is 1175)")]
+    PacketSizeExceeded(usize),
+    #[error("tried to send a packet to a client that doesn't exist")]
+    ClientNotFound,
 }
