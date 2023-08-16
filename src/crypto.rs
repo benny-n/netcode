@@ -5,7 +5,10 @@ use chacha20poly1305::{
 };
 use std::io;
 
-use crate::consts::{MAC_SIZE, PRIVATE_KEY_SIZE};
+use crate::{
+    consts::{MAC_SIZE, PRIVATE_KEY_SIZE},
+    Key,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -23,8 +26,8 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub fn generate_key() -> Result<[u8; PRIVATE_KEY_SIZE]> {
-    let mut key: [u8; PRIVATE_KEY_SIZE] = [0; PRIVATE_KEY_SIZE];
+pub fn generate_key() -> Result<Key> {
+    let mut key: Key = [0; PRIVATE_KEY_SIZE];
     OsRng.try_fill_bytes(&mut key).map_err(Error::GenerateKey)?;
     Ok(key)
 }
@@ -45,7 +48,7 @@ pub fn encrypt(
     buffer: &mut [u8],
     associated_data: Option<&[u8]>,
     nonce: u64,
-    key: &[u8; PRIVATE_KEY_SIZE],
+    key: &Key,
 ) -> Result<()> {
     let size = buffer.len();
     if size < MAC_SIZE {
@@ -67,7 +70,7 @@ pub fn decrypt(
     buffer: &mut [u8],
     associated_data: Option<&[u8]>,
     nonce: u64,
-    key: &[u8; PRIVATE_KEY_SIZE],
+    key: &Key,
 ) -> Result<()> {
     if buffer.len() < MAC_SIZE {
         // Should already include the MAC

@@ -7,14 +7,12 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{
     bytes::Bytes,
-    consts::{
-        MAC_SIZE, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION, NETCODE_VERSION_SIZE,
-        NONCE_BYTES_SIZE, PRIVATE_KEY_SIZE, USER_DATA_SIZE,
-    },
+    consts::{MAC_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION},
     crypto,
     error::NetcodeError,
     replay::ReplayProtection,
     token::{ChallengeToken, ConnectTokenPrivate},
+    Key,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -39,11 +37,42 @@ pub enum Error {
     AlreadyReceived(u64),
 }
 
+trait WriteSequence {
+    fn write_sequence(&mut self, sequence: u64) -> Result<(), io::Error>;
+}
+trait ReadSequence {
+    fn read_sequence(&mut self, sequence_len: usize) -> Result<u64, io::Error>;
+}
+
+impl<W> WriteSequence for W
+where
+    W: Write,
+{
+    fn write_sequence(&mut self, sequence: u64) -> Result<(), io::Error> {
+        let sequence_len = sequence_len(sequence);
+        for shift in 0..sequence_len {
+            self.write_u8(((sequence >> (shift * 8) as u64) & 0xFF) as u8)?;
+        }
+        Ok(())
+    }
+}
+
+impl<R> ReadSequence for R
+where
+    R: Read,
+{
+    fn read_sequence(&mut self, sequence_len: usize) -> Result<u64, io::Error> {
+        let mut sequence = [0; 8];
+        self.read_exact(&mut sequence[..sequence_len])?;
+        Ok(u64::from_le_bytes(sequence))
+    }
+}
+
 pub struct RequestPacket {
-    pub version_info: [u8; NETCODE_VERSION_SIZE],
+    pub version_info: [u8; NETCODE_VERSION.len()],
     pub protocol_id: u64,
     pub expire_timestamp: u64,
-    pub token_nonce: [u8; NONCE_BYTES_SIZE],
+    pub token_nonce: u64,
     pub token_data: [u8; ConnectTokenPrivate::SIZE],
 }
 
@@ -64,19 +93,12 @@ impl RequestPacket {
         Ok(())
     }
 
-    pub(crate) fn decrypt_token_data(
-        &mut self,
-        private_key: [u8; PRIVATE_KEY_SIZE],
-    ) -> Result<(), NetcodeError> {
+    pub(crate) fn decrypt_token_data(&mut self, private_key: Key) -> Result<(), NetcodeError> {
         let decrypted = ConnectTokenPrivate::decrypt(
             &mut self.token_data,
             self.protocol_id,
             self.expire_timestamp,
-            u64::from_le_bytes(
-                self.token_nonce[4..]
-                    .try_into()
-                    .map_err(|_| NetcodeError::InvalidPacket)?,
-            ),
+            self.token_nonce,
             &private_key,
         )?;
         let mut token_data = std::io::Cursor::new(&mut self.token_data[..]);
@@ -90,18 +112,17 @@ impl Bytes for RequestPacket {
         writer.write_all(&self.version_info)?;
         writer.write_u64::<LittleEndian>(self.protocol_id)?;
         writer.write_u64::<LittleEndian>(self.expire_timestamp)?;
-        writer.write_all(&self.token_nonce)?;
+        writer.write_u64::<LittleEndian>(self.token_nonce)?;
         writer.write_all(&self.token_data)?;
         Ok(())
     }
 
     fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
-        let mut version_info = [0; NETCODE_VERSION_SIZE];
+        let mut version_info = [0; NETCODE_VERSION.len()];
         reader.read_exact(&mut version_info)?;
         let protocol_id = reader.read_u64::<LittleEndian>()?;
         let expire_timestamp = reader.read_u64::<LittleEndian>()?;
-        let mut token_nonce = [0; NONCE_BYTES_SIZE];
-        reader.read_exact(&mut token_nonce)?;
+        let token_nonce = reader.read_u64::<LittleEndian>()?;
         let mut token_data = [0; ConnectTokenPrivate::SIZE];
         reader.read_exact(&mut token_data)?;
         Ok(Self {
@@ -115,6 +136,11 @@ impl Bytes for RequestPacket {
 }
 
 pub struct DeniedPacket {}
+impl DeniedPacket {
+    pub(crate) fn create() -> Packet {
+        Packet::Denied(DeniedPacket {})
+    }
+}
 impl Bytes for DeniedPacket {
     fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
         Ok(())
@@ -129,6 +155,15 @@ pub struct ChallengePacket {
     pub sequence: u64,
     pub token: [u8; ChallengeToken::SIZE],
 }
+impl ChallengePacket {
+    pub(crate) fn create(sequence: u64, token_bytes: [u8; ChallengeToken::SIZE]) -> Packet {
+        Packet::Challenge(ChallengePacket {
+            sequence,
+            token: token_bytes,
+        })
+    }
+}
+
 impl Bytes for ChallengePacket {
     fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
         writer.write_u64::<LittleEndian>(self.sequence)?;
@@ -167,6 +202,14 @@ pub struct KeepAlivePacket {
     pub client_index: i32,
     pub max_clients: i32,
 }
+impl KeepAlivePacket {
+    pub(crate) fn create(client_index: i32, max_clients: i32) -> Packet {
+        Packet::KeepAlive(KeepAlivePacket {
+            client_index,
+            max_clients,
+        })
+    }
+}
 impl Bytes for KeepAlivePacket {
     fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
         writer.write_i32::<LittleEndian>(self.client_index)?;
@@ -187,8 +230,20 @@ impl Bytes for KeepAlivePacket {
 pub struct PayloadPacket {
     pub payload: Vec<u8>,
 }
+impl PayloadPacket {
+    pub(crate) fn create(payload: impl Into<Vec<u8>>) -> Packet {
+        Packet::Payload(PayloadPacket {
+            payload: payload.into(),
+        })
+    }
+}
 
 pub struct DisconnectPacket {}
+impl DisconnectPacket {
+    pub(crate) fn create() -> Packet {
+        Packet::Disconnect(Self {})
+    }
+}
 impl Bytes for DisconnectPacket {
     fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
         Ok(())
@@ -199,6 +254,8 @@ impl Bytes for DisconnectPacket {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
+// TODO: think about how to handle this clippy warning (not neccessarily a bad thing)
 pub enum Packet {
     Request(RequestPacket),
     Denied(DeniedPacket),
@@ -209,16 +266,30 @@ pub enum Packet {
     Disconnect(DisconnectPacket),
 }
 
+impl std::fmt::Display for Packet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Packet::Request(_) => write!(f, "connection request"),
+            Packet::Response(_) => write!(f, "connection response"),
+            Packet::KeepAlive(_) => write!(f, "keep alive packet"),
+            Packet::Payload(_) => write!(f, "payload packet"),
+            Packet::Disconnect(_) => write!(f, "disconnect packet"),
+            Packet::Denied(_) => write!(f, "denied packet"),
+            Packet::Challenge(_) => write!(f, "challenge packet"),
+        }
+    }
+}
+
 pub type PacketKind = u8;
 
 impl Packet {
-    const REQUEST: PacketKind = 0;
-    const DENIED: PacketKind = 1;
-    const CHALLENGE: PacketKind = 2;
-    const RESPONSE: PacketKind = 3;
-    const KEEP_ALIVE: PacketKind = 4;
-    const PAYLOAD: PacketKind = 5;
-    const DISCONNECT: PacketKind = 6;
+    pub(crate) const REQUEST: PacketKind = 0;
+    pub(crate) const DENIED: PacketKind = 1;
+    pub(crate) const CHALLENGE: PacketKind = 2;
+    pub(crate) const RESPONSE: PacketKind = 3;
+    pub(crate) const KEEP_ALIVE: PacketKind = 4;
+    pub(crate) const PAYLOAD: PacketKind = 5;
+    pub(crate) const DISCONNECT: PacketKind = 6;
     fn kind(&self) -> PacketKind {
         match self {
             Packet::Request(_) => Packet::REQUEST,
@@ -236,11 +307,14 @@ impl Packet {
     pub(crate) fn seq_len_and_pkt_kind(first_byte: u8) -> (usize, PacketKind) {
         ((first_byte >> 4) as usize, first_byte & 0xF)
     }
+    pub(crate) fn is_connection_request(first_byte: u8) -> bool {
+        first_byte == Packet::REQUEST
+    }
     pub fn write(
         &self,
         out: &mut [u8],
         sequence: u64,
-        packet_key: &[u8; PRIVATE_KEY_SIZE],
+        packet_key: &Key,
         protocol_id: u64,
     ) -> Result<usize, NetcodeError> {
         let len = out.len();
@@ -251,9 +325,7 @@ impl Packet {
             return Ok(cursor.position() as usize);
         }
         cursor.write_u8(self.prefix_byte(sequence))?;
-        for shift in 0..sequence_len(sequence) {
-            cursor.write_u8(((sequence >> shift as u64) & 0xFF) as u8)?;
-        }
+        cursor.write_sequence(sequence)?;
         let encryption_start = cursor.position() as usize;
         match self {
             Packet::Denied(pkt) => pkt.write_to(&mut cursor)?,
@@ -271,7 +343,7 @@ impl Packet {
 
         // Encrypt the per-packet packet written with the prefix byte, protocol id and version as the associated data.
         // This must match to decrypt.
-        let mut aead = [0u8; NETCODE_VERSION_SIZE + size_of::<u64>() + size_of::<u8>()];
+        let mut aead = [0u8; NETCODE_VERSION.len() + size_of::<u64>() + size_of::<u8>()];
         let mut aead_cursor = std::io::Cursor::new(&mut aead[..]);
         aead_cursor.write_all(NETCODE_VERSION)?;
         aead_cursor.write_u64::<LittleEndian>(protocol_id)?;
@@ -288,11 +360,10 @@ impl Packet {
     }
     pub fn read(
         buf: &mut [u8], // buffer needs to be mutable to perform decryption in-place
-        packet_key: [u8; PRIVATE_KEY_SIZE],
         protocol_id: u64,
         timestamp: u64,
-        private_key: [u8; PRIVATE_KEY_SIZE],
-        replay_protection: &mut ReplayProtection,
+        key: Key,
+        replay_protection: Option<&mut ReplayProtection>,
     ) -> Result<Self, NetcodeError> {
         let buf_len = buf.len();
         if buf_len < 1 {
@@ -307,7 +378,7 @@ impl Packet {
             // connection request packet: first byte should be 0x00
             let mut packet = RequestPacket::read_from(&mut cursor)?;
             packet.validate(protocol_id, timestamp)?;
-            packet.decrypt_token_data(private_key)?;
+            packet.decrypt_token_data(key)?;
             return Ok(Packet::Request(packet));
         }
         let (sequence_len, pkt_kind) = Packet::seq_len_and_pkt_kind(prefix_byte);
@@ -315,16 +386,16 @@ impl Packet {
             // should at least have prefix byte, sequence and mac
             return Err(Error::TooSmall.into());
         }
-        let mut sequence = [0; 8];
-        cursor.read_exact(&mut sequence[..sequence_len])?;
-        let sequence = u64::from_le_bytes(sequence);
+        let sequence = cursor.read_sequence(sequence_len)?;
 
         // Replay protection
-        if pkt_kind >= Packet::KEEP_ALIVE && replay_protection.is_already_received(sequence) {
-            return Err(Error::AlreadyReceived(sequence).into());
+        if let Some(replay_protection) = replay_protection.as_ref() {
+            if pkt_kind >= Packet::KEEP_ALIVE && replay_protection.is_already_received(sequence) {
+                return Err(Error::AlreadyReceived(sequence).into());
+            }
         }
 
-        let mut aead = [0u8; NETCODE_VERSION_SIZE + size_of::<u64>() + size_of::<u8>()];
+        let mut aead = [0u8; NETCODE_VERSION.len() + size_of::<u64>() + size_of::<u8>()];
         let mut aead_cursor = std::io::Cursor::new(&mut aead[..]);
         aead_cursor.write_all(NETCODE_VERSION)?;
         aead_cursor.write_u64::<LittleEndian>(protocol_id)?;
@@ -336,13 +407,15 @@ impl Packet {
             &mut cursor.get_mut()[decryption_start..decryption_end],
             Some(&aead),
             sequence,
-            &packet_key,
+            &key,
         )?;
         // make sure cursor position is at the start of the decrypted data, so we can read it into a valid packet
         cursor.set_position(decryption_start as u64);
 
-        if pkt_kind >= Packet::KEEP_ALIVE {
-            replay_protection.advance_sequence(sequence);
+        if let Some(replay_protection) = replay_protection {
+            if pkt_kind >= Packet::KEEP_ALIVE {
+                replay_protection.advance_sequence(sequence);
+            }
         }
 
         let packet = match pkt_kind {
@@ -369,7 +442,11 @@ pub fn sequence_len(sequence: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{crypto::generate_key, token::AddressList};
+    use crate::{
+        consts::{MAX_PAYLOAD_SIZE, USER_DATA_SIZE},
+        crypto::generate_key,
+        token::AddressList,
+    };
 
     use super::*;
 
@@ -385,6 +462,13 @@ mod tests {
         assert_eq!(sequence_len(0x1_00_00_00_00_00_00), 7);
         assert_eq!(sequence_len(0x1_00_00_00_00_00_00_00), 8);
         assert_eq!(sequence_len(0x80_00_00_00_00_00_00_00), 8);
+
+        let sequence = 1u64 << 63;
+        let cursor = &mut std::io::Cursor::new(Vec::new());
+        cursor.write_sequence(sequence).unwrap();
+        assert_eq!(cursor.get_ref().len(), 8);
+        cursor.set_position(0);
+        assert_eq!(cursor.read_sequence(8).unwrap(), sequence);
     }
 
     #[test]
@@ -398,11 +482,15 @@ mod tests {
         let protocol_id = 0x1234_5678_9abc_def0;
         let expire_timestamp = u64::MAX;
         let sequence = 0u64;
-        let token_nonce = [0u8; NONCE_BYTES_SIZE];
         let mut replay_protection = ReplayProtection::new();
-        let token_data =
-            ConnectTokenPrivate::new(client_id, timeout_seconds, server_addresses, user_data)
-                .unwrap();
+        let token_data = ConnectTokenPrivate {
+            client_id,
+            timeout_seconds,
+            server_addresses,
+            user_data,
+            client_to_server_key: generate_key().unwrap(),
+            server_to_client_key: generate_key().unwrap(),
+        };
 
         let token_data = token_data
             .encrypt(protocol_id, expire_timestamp, sequence, &private_key)
@@ -412,7 +500,7 @@ mod tests {
             version_info: *NETCODE_VERSION,
             protocol_id,
             expire_timestamp,
-            token_nonce,
+            token_nonce: sequence,
             token_data,
         });
 
@@ -423,11 +511,10 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
             private_key,
-            &mut replay_protection,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -438,7 +525,7 @@ mod tests {
         assert_eq!(req_pkt.version_info, *NETCODE_VERSION);
         assert_eq!(req_pkt.protocol_id, protocol_id);
         assert_eq!(req_pkt.expire_timestamp, expire_timestamp);
-        assert_eq!(req_pkt.token_nonce, token_nonce);
+        assert_eq!(req_pkt.token_nonce, sequence);
 
         let mut reader = std::io::Cursor::new(req_pkt.token_data);
         let connect_token_private = ConnectTokenPrivate::read_from(&mut reader).unwrap();
@@ -456,7 +543,6 @@ mod tests {
 
     #[test]
     fn denied_packet() {
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
@@ -471,11 +557,10 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
-            &mut replay_protection,
+            packet_key,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -487,7 +572,6 @@ mod tests {
     #[test]
     pub fn challenge_packet() {
         let token = [0u8; ChallengeToken::SIZE];
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
@@ -502,11 +586,10 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
-            &mut replay_protection,
+            packet_key,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -520,7 +603,6 @@ mod tests {
 
     #[test]
     pub fn keep_alive_packet() {
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
@@ -540,11 +622,10 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
-            &mut replay_protection,
+            packet_key,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -558,7 +639,6 @@ mod tests {
 
     #[test]
     pub fn disconnect_packet() {
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
@@ -573,11 +653,10 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
-            &mut replay_protection,
+            packet_key,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
@@ -588,7 +667,6 @@ mod tests {
 
     #[test]
     pub fn payload_packet() {
-        let private_key = generate_key().unwrap();
         let packet_key = generate_key().unwrap();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
@@ -605,11 +683,10 @@ mod tests {
 
         let packet = Packet::read(
             &mut buf[..size],
-            packet_key,
             protocol_id,
             0,
-            private_key,
-            &mut replay_protection,
+            packet_key,
+            Some(&mut replay_protection),
         )
         .unwrap();
 
