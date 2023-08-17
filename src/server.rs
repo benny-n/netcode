@@ -153,7 +153,7 @@ impl ConnectionCache {
     }
 }
 // type Ctx = Box<dyn std::any::Any + Send + Sync + 'static>;
-type Callback<S> = Box<dyn FnMut(ClientIndex, Option<&mut S>)>;
+type Callback<S> = Box<dyn FnMut(ClientIndex, Option<&mut S>) + Send + Sync + 'static>;
 /// Configuration for a server.
 ///
 /// * `num_disconnect_packets` - The number of redundant disconnect packets that will be sent to a client when the server is disconnecting it.
@@ -228,7 +228,7 @@ impl<S> ServerConfig<S> {
     /// See [`ServerConfig`](ServerConfig) for an example.
     pub fn on_connect<F>(mut self, cb: F) -> Self
     where
-        F: FnMut(ClientIndex, Option<&mut S>) + 'static,
+        F: FnMut(ClientIndex, Option<&mut S>) + Send + Sync + 'static,
     {
         self.on_connect = Some(Box::new(cb));
         self
@@ -237,9 +237,9 @@ impl<S> ServerConfig<S> {
     /// The callback will be called with the client index and the context that was provided (provide a `None` context if you don't need one).
     ///
     /// See [`ServerConfig`](ServerConfig) for an example.
-    pub fn on_disconnect<F, T>(mut self, cb: F) -> Self
+    pub fn on_disconnect<F>(mut self, cb: F) -> Self
     where
-        F: FnMut(ClientIndex, Option<&mut S>) + 'static,
+        F: FnMut(ClientIndex, Option<&mut S>) + Send + Sync + 'static,
     {
         self.on_disconnect = Some(Box::new(cb));
         self
