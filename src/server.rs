@@ -4,6 +4,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 
 use crate::bytes::Bytes;
 use crate::consts::{MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE};
+use crate::crypto::{self, Key};
 use crate::error::NetcodeError;
 use crate::free_list::FreeList;
 use crate::packet::{
@@ -15,7 +16,6 @@ use crate::socket::NetcodeSocket;
 use crate::token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate};
 use crate::transceiver::Transceiver;
 use crate::utils::{time_now_secs, time_now_secs_f64};
-use crate::{crypto, Key};
 
 // Re-export `AddressList`
 pub use crate::token::AddressList;

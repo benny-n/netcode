@@ -5,10 +5,7 @@ use chacha20poly1305::{
 };
 use std::io;
 
-use crate::{
-    consts::{MAC_SIZE, PRIVATE_KEY_SIZE},
-    Key,
-};
+use crate::consts::{MAC_SIZE, PRIVATE_KEY_SIZE};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -24,6 +21,7 @@ pub enum Error {
     GenerateKey(chacha20poly1305::aead::rand_core::Error),
 }
 
+pub type Key = [u8; crate::consts::PRIVATE_KEY_SIZE];
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn generate_key() -> Result<Key> {

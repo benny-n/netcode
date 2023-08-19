@@ -6,9 +6,9 @@ use crate::{
         DEFAULT_CONNECTION_TIMEOUT_SECONDS, DEFAULT_TOKEN_EXPIRE_SECONDS, NETCODE_VERSION,
         PRIVATE_KEY_SIZE, USER_DATA_SIZE,
     },
-    crypto,
+    crypto::{self, Key},
     error::NetcodeError,
-    Key,
+    free_list::{FreeList, FreeListIter},
 };
 
 use std::{
@@ -21,60 +21,38 @@ pub const MAX_SERVERS_PER_CONNECT: usize = 32;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddressList {
-    len: u32,
-    addrs: [Option<SocketAddr>; MAX_SERVERS_PER_CONNECT],
+    addrs: FreeList<SocketAddr, MAX_SERVERS_PER_CONNECT>,
 }
 
 impl AddressList {
     const IPV4: u8 = 1;
     const IPV6: u8 = 2;
     pub fn new(addrs: impl ToSocketAddrs) -> Result<Self, NetcodeError> {
-        let mut server_addresses = Self {
-            addrs: [None; MAX_SERVERS_PER_CONNECT],
-            len: 0,
-        };
+        let mut server_addresses = FreeList::new();
 
         for (i, addr) in addrs.to_socket_addrs()?.enumerate() {
             if i >= MAX_SERVERS_PER_CONNECT {
                 break;
             }
 
-            server_addresses.addrs[i] = Some(addr);
-            server_addresses.len += 1;
+            server_addresses.insert(addr);
         }
 
-        Ok(server_addresses)
+        Ok(AddressList {
+            addrs: server_addresses,
+        })
     }
     pub fn len(&self) -> u32 {
-        self.len
+        self.addrs.len() as u32
     }
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.addrs.len() == 0
     }
-    pub fn iter(&self) -> ServerAddrsIter {
-        ServerAddrsIter {
-            addrs: &self.addrs,
+    pub fn iter(&self) -> FreeListIter<SocketAddr, MAX_SERVERS_PER_CONNECT> {
+        FreeListIter {
+            free_list: &self.addrs,
             index: 0,
         }
-    }
-}
-
-pub struct ServerAddrsIter<'a> {
-    addrs: &'a [Option<SocketAddr>; MAX_SERVERS_PER_CONNECT],
-    index: usize,
-}
-
-impl<'a> Iterator for ServerAddrsIter<'a> {
-    type Item = SocketAddr;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= MAX_SERVERS_PER_CONNECT {
-            return None;
-        }
-
-        let addr = self.addrs[self.index];
-        self.index += 1;
-        addr
     }
 }
 
@@ -82,7 +60,7 @@ impl Bytes for AddressList {
     const SIZE: usize = size_of::<u32>() + MAX_SERVERS_PER_CONNECT * (1 + size_of::<u16>() + 16);
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
         buf.write_u32::<LittleEndian>(self.len())?;
-        for addr in self.addrs.iter().flatten() {
+        for addr in self.iter() {
             match addr {
                 SocketAddr::V4(addr_v4) => {
                     buf.write_u8(Self::IPV4)?;
@@ -101,11 +79,11 @@ impl Bytes for AddressList {
 
     fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
         let len = reader.read_u32::<LittleEndian>()?;
-        let mut addrs = [None; MAX_SERVERS_PER_CONNECT];
+        let mut addrs = FreeList::new();
 
-        for i in 0..len {
+        for _ in 0..len {
             let addr_type = reader.read_u8()?;
-            addrs[i as usize] = Some(match addr_type {
+            let addr = match addr_type {
                 Self::IPV4 => {
                     let mut octets = [0; 4];
                     reader.read_exact(&mut octets)?;
@@ -124,10 +102,11 @@ impl Bytes for AddressList {
                         "invalid ip address type",
                     ))
                 }
-            });
+            };
+            addrs.insert(addr);
         }
 
-        Ok(Self { len, addrs })
+        Ok(Self { addrs })
     }
 }
 
@@ -395,6 +374,13 @@ impl ConnectToken {
         nonce: u64,
     ) -> ConnectTokenBuilder<A> {
         ConnectTokenBuilder::new(server_addresses, protocol_id, client_id, nonce)
+    }
+
+    pub fn try_into_bytes(self) -> Result<[u8; Self::SIZE], io::Error> {
+        let mut buf = [0u8; Self::SIZE];
+        let mut cursor = io::Cursor::new(&mut buf[..]);
+        self.write_to(&mut cursor)?;
+        Ok(buf)
     }
 }
 

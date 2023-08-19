@@ -8,11 +8,10 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use crate::{
     bytes::Bytes,
     consts::{MAC_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION},
-    crypto,
+    crypto::{self, Key},
     error::NetcodeError,
     replay::ReplayProtection,
     token::{ChallengeToken, ConnectTokenPrivate},
-    Key,
 };
 
 #[derive(thiserror::Error, Debug)]
