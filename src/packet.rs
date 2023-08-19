@@ -137,7 +137,7 @@ impl Bytes for RequestPacket {
 
 pub struct DeniedPacket {}
 impl DeniedPacket {
-    pub(crate) fn create() -> Packet {
+    pub(crate) fn create() -> Packet<'static> {
         Packet::Denied(DeniedPacket {})
     }
 }
@@ -156,7 +156,10 @@ pub struct ChallengePacket {
     pub token: [u8; ChallengeToken::SIZE],
 }
 impl ChallengePacket {
-    pub(crate) fn create(sequence: u64, token_bytes: [u8; ChallengeToken::SIZE]) -> Packet {
+    pub(crate) fn create(
+        sequence: u64,
+        token_bytes: [u8; ChallengeToken::SIZE],
+    ) -> Packet<'static> {
         Packet::Challenge(ChallengePacket {
             sequence,
             token: token_bytes,
@@ -203,7 +206,7 @@ pub struct KeepAlivePacket {
     pub max_clients: i32,
 }
 impl KeepAlivePacket {
-    pub(crate) fn create(client_index: i32, max_clients: i32) -> Packet {
+    pub(crate) fn create(client_index: i32, max_clients: i32) -> Packet<'static> {
         Packet::KeepAlive(KeepAlivePacket {
             client_index,
             max_clients,
@@ -227,20 +230,18 @@ impl Bytes for KeepAlivePacket {
     }
 }
 
-pub struct PayloadPacket {
-    pub payload: Vec<u8>,
+pub struct PayloadPacket<'p> {
+    pub buf: &'p [u8],
 }
-impl PayloadPacket {
-    pub(crate) fn create(payload: impl Into<Vec<u8>>) -> Packet {
-        Packet::Payload(PayloadPacket {
-            payload: payload.into(),
-        })
+impl PayloadPacket<'_> {
+    pub(crate) fn create(buf: &[u8]) -> Packet {
+        Packet::Payload(PayloadPacket { buf })
     }
 }
 
 pub struct DisconnectPacket {}
 impl DisconnectPacket {
-    pub(crate) fn create() -> Packet {
+    pub(crate) fn create() -> Packet<'static> {
         Packet::Disconnect(Self {})
     }
 }
@@ -256,17 +257,17 @@ impl Bytes for DisconnectPacket {
 
 #[allow(clippy::large_enum_variant)]
 // TODO: think about how to handle this clippy warning (not neccessarily a bad thing)
-pub enum Packet {
+pub enum Packet<'p> {
     Request(RequestPacket),
     Denied(DeniedPacket),
     Challenge(ChallengePacket),
     Response(ResponsePacket),
     KeepAlive(KeepAlivePacket),
-    Payload(PayloadPacket),
+    Payload(PayloadPacket<'p>),
     Disconnect(DisconnectPacket),
 }
 
-impl std::fmt::Display for Packet {
+impl std::fmt::Display for Packet<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Packet::Request(_) => write!(f, "connection request"),
@@ -282,7 +283,7 @@ impl std::fmt::Display for Packet {
 
 pub type PacketKind = u8;
 
-impl Packet {
+impl<'p> Packet<'p> {
     pub(crate) const REQUEST: PacketKind = 0;
     pub(crate) const DENIED: PacketKind = 1;
     pub(crate) const CHALLENGE: PacketKind = 2;
@@ -301,10 +302,10 @@ impl Packet {
             Packet::Disconnect(_) => Packet::DISCONNECT,
         }
     }
-    fn prefix_byte(&self, sequence: u64) -> u8 {
+    fn set_prefix(&self, sequence: u64) -> u8 {
         sequence_len(sequence) << 4 | self.kind()
     }
-    pub(crate) fn seq_len_and_pkt_kind(first_byte: u8) -> (usize, PacketKind) {
+    pub(crate) fn get_prefix(first_byte: u8) -> (usize, PacketKind) {
         ((first_byte >> 4) as usize, first_byte & 0xF)
     }
     pub(crate) fn is_connection_request(first_byte: u8) -> bool {
@@ -324,7 +325,7 @@ impl Packet {
             pkt.write_to(&mut cursor)?;
             return Ok(cursor.position() as usize);
         }
-        cursor.write_u8(self.prefix_byte(sequence))?;
+        cursor.write_u8(self.set_prefix(sequence))?;
         cursor.write_sequence(sequence)?;
         let encryption_start = cursor.position() as usize;
         match self {
@@ -333,7 +334,7 @@ impl Packet {
             Packet::Response(pkt) => pkt.write_to(&mut cursor)?,
             Packet::KeepAlive(pkt) => pkt.write_to(&mut cursor)?,
             Packet::Disconnect(pkt) => pkt.write_to(&mut cursor)?,
-            Packet::Payload(PayloadPacket { payload }) => cursor.write_all(payload)?,
+            Packet::Payload(PayloadPacket { buf }) => cursor.write_all(buf)?,
             _ => unreachable!(), // Packet::Request variant is handled above
         }
         if cursor.position() as usize > len - MAC_SIZE {
@@ -347,7 +348,7 @@ impl Packet {
         let mut aead_cursor = std::io::Cursor::new(&mut aead[..]);
         aead_cursor.write_all(NETCODE_VERSION)?;
         aead_cursor.write_u64::<LittleEndian>(protocol_id)?;
-        aead_cursor.write_u8(self.prefix_byte(sequence))?;
+        aead_cursor.write_u8(self.set_prefix(sequence))?;
 
         crypto::encrypt(
             &mut out[encryption_start..encryption_end],
@@ -359,12 +360,12 @@ impl Packet {
         Ok(encryption_end)
     }
     pub fn read(
-        buf: &mut [u8], // buffer needs to be mutable to perform decryption in-place
+        buf: &'p mut [u8], // buffer needs to be mutable to perform decryption in-place
         protocol_id: u64,
         timestamp: u64,
         key: Key,
         replay_protection: Option<&mut ReplayProtection>,
-    ) -> Result<Self, NetcodeError> {
+    ) -> Result<Packet<'p>, NetcodeError> {
         let buf_len = buf.len();
         if buf_len < 1 {
             return Err(Error::TooSmall.into());
@@ -381,7 +382,7 @@ impl Packet {
             packet.decrypt_token_data(key)?;
             return Ok(Packet::Request(packet));
         }
-        let (sequence_len, pkt_kind) = Packet::seq_len_and_pkt_kind(prefix_byte);
+        let (sequence_len, pkt_kind) = Packet::get_prefix(prefix_byte);
         if buf_len < size_of::<u8>() + sequence_len + MAC_SIZE {
             // should at least have prefix byte, sequence and mac
             return Err(Error::TooSmall.into());
@@ -426,9 +427,10 @@ impl Packet {
             Packet::KEEP_ALIVE => Packet::KeepAlive(KeepAlivePacket::read_from(&mut cursor)?),
             Packet::DISCONNECT => Packet::Disconnect(DisconnectPacket::read_from(&mut cursor)?),
             Packet::PAYLOAD => {
-                let mut payload = vec![0; decryption_end - decryption_start - MAC_SIZE];
-                cursor.read_exact(&mut payload)?;
-                Packet::Payload(PayloadPacket { payload })
+                buf.copy_within(decryption_start..(decryption_end - MAC_SIZE), 0);
+                Packet::Payload(PayloadPacket {
+                    buf: &buf[decryption_start..(decryption_end - MAC_SIZE)],
+                })
             }
             t => return Err(Error::InvalidType(t).into()),
         };
@@ -672,9 +674,8 @@ mod tests {
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();
 
-        let packet = Packet::Payload(PayloadPacket {
-            payload: vec![0u8; 100],
-        });
+        let payload = vec![0u8; 100];
+        let packet = Packet::Payload(PayloadPacket { buf: &payload });
 
         let mut buf = [0u8; MAX_PAYLOAD_SIZE];
         let size = packet
@@ -694,6 +695,6 @@ mod tests {
             panic!("wrong packet type");
         };
 
-        assert_eq!(data_pkt.payload.len(), 100);
+        assert_eq!(data_pkt.buf.len(), 100);
     }
 }

@@ -382,12 +382,7 @@ impl<T: Transceiver, S> Server<T, S> {
         }
         Ok(())
     }
-    fn process_packet(
-        &mut self,
-        buf: &mut [u8],
-        addr: SocketAddr,
-        packet: Packet,
-    ) -> Result<usize> {
+    fn process_packet(&mut self, addr: SocketAddr, packet: Packet) -> Result<()> {
         let client_idx = self.conn_cache.get_client_idx(addr);
         log::trace!(
             "server received {} from {}",
@@ -397,20 +392,15 @@ impl<T: Transceiver, S> Server<T, S> {
                 .unwrap_or_else(|| addr.to_string())
         );
         match packet {
-            Packet::Request(packet) => self.process_connection_request(addr, packet).map(|_| 0),
-            Packet::Response(packet) => self.process_connection_response(addr, packet).map(|_| 0),
-            Packet::KeepAlive(_) => self.touch_client(client_idx).map(|_| 0),
-            Packet::Payload(packet) => {
-                self.touch_client(client_idx)?;
-                buf[..packet.payload.len()].copy_from_slice(&packet.payload[..]);
-                Ok(packet.payload.len())
-            }
+            Packet::Request(packet) => self.process_connection_request(addr, packet),
+            Packet::Response(packet) => self.process_connection_response(addr, packet),
+            Packet::KeepAlive(_) | Packet::Payload(_) => self.touch_client(client_idx),
             Packet::Disconnect(_) => {
                 if let Some(idx) = client_idx {
                     log::debug!("server disconnected client {}", idx);
                     self.conn_cache.remove(idx);
                 }
-                Ok(0)
+                Ok(())
             }
             _ => Err(NetcodeError::InvalidPacket)?,
         }
@@ -637,7 +627,7 @@ impl<T: Transceiver, S> Server<T, S> {
     /// let mut server = Server::new(bind_addr, protocol_id, Some(private_key)).unwrap();
     ///
     /// let client_id = 123u64;
-    /// let public_addr = "example.com:12345"; // TODO: replace with your public address
+    /// let public_addr = "localhost:12345"; // TODO: replace with your public address
     /// let token = server.token(public_addr, client_id)
     ///     .expire_seconds(60)  // optional - default is 30 seconds. negative values would make the token never expire.
     ///     .timeout_seconds(-1) // optional - default is 15 seconds. negative values would make the token never timeout.
@@ -700,8 +690,13 @@ impl<T: Transceiver, S> Server<T, S> {
             key,
             replay_protection,
         )?;
-
-        self.process_packet(buf, addr, packet)
+        let size = if let Packet::Payload(ref packet) = packet {
+            packet.buf.len()
+        } else {
+            0
+        };
+        self.process_packet(addr, packet)?;
+        Ok(size)
     }
     pub fn send(&mut self, buf: &[u8], client_idx: ClientIndex) -> Result<()> {
         if buf.len() > MAX_PAYLOAD_SIZE {
