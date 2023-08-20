@@ -42,8 +42,8 @@ impl AddressList {
             addrs: server_addresses,
         })
     }
-    pub fn len(&self) -> u32 {
-        self.addrs.len() as u32
+    pub fn len(&self) -> usize {
+        self.addrs.len()
     }
     pub fn is_empty(&self) -> bool {
         self.addrs.len() == 0
@@ -56,10 +56,18 @@ impl AddressList {
     }
 }
 
+impl std::ops::Index<usize> for AddressList {
+    type Output = SocketAddr;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.addrs.get(index).expect("index out of bounds")
+    }
+}
+
 impl Bytes for AddressList {
     const SIZE: usize = size_of::<u32>() + MAX_SERVERS_PER_CONNECT * (1 + size_of::<u16>() + 16);
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
-        buf.write_u32::<LittleEndian>(self.len())?;
+        buf.write_u32::<LittleEndian>(self.len() as u32)?;
         for addr in self.iter() {
             match addr {
                 SocketAddr::V4(addr_v4) => {
