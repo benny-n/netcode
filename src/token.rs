@@ -249,16 +249,16 @@ impl Bytes for ChallengeToken {
 
 // TODO: document
 pub struct ConnectToken {
-    version_info: [u8; NETCODE_VERSION.len()],
-    protocol_id: u64,
-    create_timestamp: u64,
-    expire_timestamp: u64,
-    nonce: u64,
-    private_data: [u8; ConnectTokenPrivate::SIZE],
-    timeout_seconds: i32,
-    server_addresses: AddressList,
-    client_to_server_key: Key,
-    server_to_client_key: Key,
+    pub version_info: [u8; NETCODE_VERSION.len()],
+    pub protocol_id: u64,
+    pub create_timestamp: u64,
+    pub expire_timestamp: u64,
+    pub nonce: u64,
+    pub private_data: [u8; ConnectTokenPrivate::SIZE],
+    pub timeout_seconds: i32,
+    pub server_addresses: AddressList,
+    pub client_to_server_key: Key,
+    pub server_to_client_key: Key,
 }
 
 // TODO: document

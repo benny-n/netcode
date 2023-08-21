@@ -20,7 +20,7 @@ use crate::utils::{time_now_secs, time_now_secs_f64};
 // Re-export `AddressList`
 pub use crate::token::AddressList;
 
-pub type Result<T> = std::result::Result<T, NetcodeError>;
+type Result<T> = std::result::Result<T, NetcodeError>;
 
 struct TokenEntry {
     _time: f64,
@@ -658,7 +658,7 @@ impl<T: Transceiver, S> Server<T, S> {
         self.send_keep_alive_packets()?;
         Ok(())
     }
-    pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+    pub fn recv(&mut self, mut buf: &mut [u8]) -> Result<usize> {
         let now = time_now_secs()?;
         let (size, addr) = self.transceiver.recv(buf).map_err(|e| e.into())?;
         let Some(addr) = addr else {
