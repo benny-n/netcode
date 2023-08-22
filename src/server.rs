@@ -344,6 +344,11 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
 }
 
 impl<T: Transceiver, S> Server<T, S> {
+    const ALLOWED_PACKETS: u8 = Packet::REQUEST
+        | Packet::RESPONSE
+        | Packet::KEEP_ALIVE
+        | Packet::PAYLOAD
+        | Packet::DISCONNECT;
     fn on_connect(&mut self, client_idx: ClientIndex) {
         if let Some(cb) = self.cfg.on_connect.as_mut() {
             cb(client_idx, self.cfg.context.as_mut().map(|s| s.as_mut()))
@@ -683,6 +688,7 @@ impl<T: Transceiver, S> Server<T, S> {
             now,
             key,
             replay_protection,
+            Self::ALLOWED_PACKETS,
         ) {
             Ok(packet) => packet,
             Err(NetcodeError::Crypto(_)) => {

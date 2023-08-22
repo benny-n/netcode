@@ -257,6 +257,11 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
 }
 
 impl<T: Transceiver, Ctx> Client<T, Ctx> {
+    const ALLOWED_PACKETS: u8 = Packet::DENIED
+        | Packet::CHALLENGE
+        | Packet::KEEP_ALIVE
+        | Packet::PAYLOAD
+        | Packet::DISCONNECT;
     fn set_state(&mut self, state: ClientState) {
         log::debug!("client state changing from {:?} to {:?}", self.state, state);
         if let Some(ref mut cb) = self.cfg.on_state_change {
@@ -445,6 +450,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             now,
             self.token.server_to_client_key,
             Some(&mut self.replay_protection),
+            Self::ALLOWED_PACKETS,
         ) {
             Ok(packet) => packet,
             Err(NetcodeError::Crypto(_)) => {
