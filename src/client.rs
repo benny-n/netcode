@@ -257,11 +257,11 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
 }
 
 impl<T: Transceiver, Ctx> Client<T, Ctx> {
-    const ALLOWED_PACKETS: u8 = Packet::DENIED
-        | Packet::CHALLENGE
-        | Packet::KEEP_ALIVE
-        | Packet::PAYLOAD
-        | Packet::DISCONNECT;
+    const ALLOWED_PACKETS: u8 = 1 << Packet::DENIED
+        | 1 << Packet::CHALLENGE
+        | 1 << Packet::KEEP_ALIVE
+        | 1 << Packet::PAYLOAD
+        | 1 << Packet::DISCONNECT;
     fn set_state(&mut self, state: ClientState) {
         log::debug!("client state changing from {:?} to {:?}", self.state, state);
         if let Some(ref mut cb) = self.cfg.on_state_change {

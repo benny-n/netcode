@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,9 +21,50 @@ pub use crate::token::AddressList;
 
 type Result<T> = std::result::Result<T, NetcodeError>;
 
+#[derive(Clone, Copy)]
 struct TokenEntry {
-    _time: f64,
+    time: f64,
     mac: [u8; 16],
+    addr: SocketAddr,
+}
+
+struct TokenEntries {
+    list: FreeList<TokenEntry, { MAX_CLIENTS * 8 }>,
+}
+
+impl TokenEntries {
+    fn new() -> Self {
+        Self {
+            list: FreeList::new(),
+        }
+    }
+    fn find_or_insert(&mut self, entry: TokenEntry) -> bool {
+        let (mut oldest, mut matching) = (None, None);
+        let mut oldest_time = f64::INFINITY;
+        // Perform a linear search for the oldest and matching entries at the same time
+        for (idx, saved_entry) in self.list.iter().enumerate() {
+            if entry.time < oldest_time {
+                oldest_time = saved_entry.time;
+                oldest = Some(idx);
+            }
+            if entry.mac == saved_entry.mac {
+                matching = Some(idx);
+            }
+        }
+        let Some(oldest) = oldest else {
+            // If there is no oldest entry then the list is empty, so just insert the entry
+            self.list.insert(entry);
+            return true;
+        };
+        if let Some(matching) = matching {
+            // Allow reusing tokens only if the address matches
+            self.list[matching].addr == entry.addr
+        } else {
+            // If there is no matching entry, replace the oldest one
+            self.list.replace(oldest, entry);
+            true
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -255,7 +295,7 @@ pub struct Server<T: Transceiver, Ctx = ()> {
     challenge_key: Key,
     protocol_id: u64,
     conn_cache: ConnectionCache,
-    token_entries: HashMap<SocketAddr, TokenEntry>,
+    token_entries: TokenEntries,
     cfg: ServerConfig<Ctx>,
 }
 
@@ -290,7 +330,7 @@ impl Server<NetcodeSocket> {
             challenge_sequence: 0,
             challenge_key: crypto::generate_key()?,
             conn_cache: ConnectionCache::new(0.0),
-            token_entries: HashMap::new(),
+            token_entries: TokenEntries::new(),
             cfg: ServerConfig::default(),
         };
         log::info!("server started on {}", server.transceiver.addr());
@@ -335,7 +375,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
             challenge_sequence: 0,
             challenge_key: crypto::generate_key()?,
             conn_cache: ConnectionCache::new(0.0),
-            token_entries: HashMap::new(),
+            token_entries: TokenEntries::new(),
             cfg,
         };
         log::info!("server started on {}", bind_addr);
@@ -344,11 +384,11 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
 }
 
 impl<T: Transceiver, S> Server<T, S> {
-    const ALLOWED_PACKETS: u8 = Packet::REQUEST
-        | Packet::RESPONSE
-        | Packet::KEEP_ALIVE
-        | Packet::PAYLOAD
-        | Packet::DISCONNECT;
+    const ALLOWED_PACKETS: u8 = 1 << Packet::REQUEST
+        | 1 << Packet::RESPONSE
+        | 1 << Packet::KEEP_ALIVE
+        | 1 << Packet::PAYLOAD
+        | 1 << Packet::DISCONNECT;
     fn on_connect(&mut self, client_idx: ClientIndex) {
         if let Some(cb) = self.cfg.on_connect.as_mut() {
             cb(client_idx, self.cfg.context.as_mut().map(|s| s.as_mut()))
@@ -458,40 +498,37 @@ impl<T: Transceiver, S> Server<T, S> {
             );
             return Ok(());
         };
-        if self.conn_cache.addr_to_idx.get(&from_addr).is_some() {
+        if self
+            .conn_cache
+            .addr_to_idx
+            .get(&from_addr)
+            .and_then(|&idx| self.conn_cache.clients.get(idx))
+            .is_some_and(|&conn| conn.is_connected())
+        {
             log::debug!("server ignored connection request. a client with this address is already connected");
             return Ok(());
         };
-        if self.conn_cache.find_by_id(token.client_id).is_some() {
+        if self
+            .conn_cache
+            .find_by_id(token.client_id)
+            .is_some_and(|(_, conn)| conn.is_connected())
+        {
             log::debug!(
                 "server ignored connection request. a client with this id is already connected"
             );
             return Ok(());
         };
-        let mac: [u8; MAC_SIZE] = packet.token_data
-            [ConnectTokenPrivate::SIZE - MAC_SIZE..ConnectTokenPrivate::SIZE]
-            .try_into()
-            .map_err(|_| NetcodeError::InvalidPacket)?;
-        match self.token_entries.entry(from_addr) {
-            Entry::Occupied(entry) if entry.get().mac == mac => {
-                log::debug!(
-                    "server ignored connection request. connect token has already been used"
-                );
-                return Ok(());
-            }
-            Entry::Occupied(mut entry) => {
-                entry.insert(TokenEntry {
-                    _time: self.time,
-                    mac,
-                });
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(TokenEntry {
-                    _time: self.time,
-                    mac,
-                });
-            }
-        }
+        let entry = TokenEntry {
+            time: self.time,
+            addr: from_addr,
+            mac: packet.token_data[ConnectTokenPrivate::SIZE - MAC_SIZE..ConnectTokenPrivate::SIZE]
+                .try_into()
+                .map_err(|_| NetcodeError::InvalidPacket)?,
+        };
+        if !self.token_entries.find_or_insert(entry) {
+            log::debug!("server ignored connection request. connect token has already been used");
+            return Ok(());
+        };
         if self.conn_cache.clients.len() >= self.max_clients {
             log::debug!("server denied connection request. server is full");
             self.send_to_addr(
@@ -669,11 +706,14 @@ impl<T: Transceiver, S> Server<T, S> {
             return Ok(0);
         }
         let (key, replay_protection) = match self.conn_cache.addr_to_idx.get(&addr) {
+            // Regardless of whether an entry in the connection cache exists for the client or not,
+            // if the packet is a connection request we need to use the server's private key to decrypt it.
+            _ if Packet::is_connection_request(buf[0]) => (self.private_key, None),
             Some(client_idx) => (
+                // If the packet is not a connection request, use the receive key to decrypt it.
                 self.conn_cache.clients[*client_idx].receive_key,
                 self.conn_cache.replay_protection.get_mut(client_idx),
             ),
-            None if Packet::is_connection_request(buf[0]) => (self.private_key, None),
             None => {
                 // Not a connection request packet, and not a known client, so ignore
                 log::debug!(
@@ -754,7 +794,7 @@ pub mod tests {
                 challenge_sequence: 0,
                 challenge_key: crypto::generate_key()?,
                 conn_cache: ConnectionCache::new(time),
-                token_entries: HashMap::new(),
+                token_entries: TokenEntries::new(),
                 cfg: ServerConfig::default(),
             };
             Ok(server)
