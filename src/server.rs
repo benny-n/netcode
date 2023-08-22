@@ -345,17 +345,6 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
     }
 }
 
-// #[cfg(test)]
-// use crate::simulator::NetworkSimulator;
-// #[cfg(test)]
-// impl Server<NetworkSimulator> {
-//     pub fn new() -> Result<Self> {
-//         Ok(Self {
-//             transceiver: NetworkSimulator::default(),
-//         })
-//     }
-// }
-
 impl<T: Transceiver, S> Server<T, S> {
     fn on_connect(&mut self, client_idx: ClientIndex) {
         if let Some(cb) = self.cfg.on_connect.as_mut() {
@@ -721,5 +710,33 @@ impl<T: Transceiver, S> Server<T, S> {
         }
         let packet = PayloadPacket::create(buf);
         self.send_to_client(packet, client_idx)
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use crate::simulator::NetworkSimulator;
+    use std::{cell::RefCell, rc::Rc};
+    impl Server<Rc<RefCell<NetworkSimulator>>> {
+        pub fn with_simulator(sim: Rc<RefCell<NetworkSimulator>>) -> Result<Self> {
+            let time = time_now_secs_f64();
+            log::info!("server started on {}", sim.borrow().addr());
+            let server = Server {
+                transceiver: sim,
+                time,
+                private_key: crypto::generate_key()?,
+                max_clients: MAX_CLIENTS,
+                protocol_id: 0,
+                sequence: 1 << 63,
+                token_sequence: 0,
+                challenge_sequence: 0,
+                challenge_key: crypto::generate_key()?,
+                conn_cache: ConnectionCache::new(time),
+                token_entries: HashMap::new(),
+                cfg: ServerConfig::default(),
+            };
+            Ok(server)
+        }
     }
 }

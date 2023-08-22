@@ -503,10 +503,39 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
 
 #[cfg(test)]
 mod tests {
-    use crate::consts::NETCODE_VERSION;
-
     use super::*;
+    use crate::consts::NETCODE_VERSION;
+    use crate::simulator::NetworkSimulator;
     use std::io::Write;
+    use std::{cell::RefCell, rc::Rc};
+
+    impl Client<Rc<RefCell<NetworkSimulator>>> {
+        pub fn with_simulator(
+            token: ConnectToken,
+            sim: Rc<RefCell<NetworkSimulator>>,
+        ) -> Result<Self> {
+            Ok(Self {
+                transceiver: sim,
+                state: ClientState::Disconnected,
+                time: time_now_secs_f64(),
+                start_time: 0.0,
+                last_send_time: f64::NEG_INFINITY,
+                last_receive_time: f64::NEG_INFINITY,
+                server_addr_idx: 0,
+                sequence: 0,
+                challenge_token_sequence: 0,
+                challenge_token_data: [0u8; ChallengeToken::SIZE],
+                client_index: 0,
+                max_clients: 0,
+                token,
+                replay_protection: ReplayProtection::new(),
+                should_disconnect: false,
+                should_disconnect_state: ClientState::Disconnected,
+                cfg: ClientConfig::default(),
+            })
+        }
+    }
+
     #[test]
     fn invalid_connect_token() {
         let mut token_bytes = [0u8; ConnectToken::SIZE];
