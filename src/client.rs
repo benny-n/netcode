@@ -404,7 +404,11 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         );
         Ok(())
     }
-    /// Get the current state of the client.
+    /// Gets the local `SocketAddr` that the client is bound to.
+    pub fn addr(&self) -> SocketAddr {
+        self.transceiver.addr()
+    }
+    /// Gets the current state of the client.
     pub fn state(&self) -> ClientState {
         self.state
     }
@@ -435,13 +439,23 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             // Too small to be a packet
             return Ok(0);
         }
-        let packet = Packet::read(
+        let packet = match Packet::read(
             &mut buf[..size],
             self.token.protocol_id,
             now,
             self.token.server_to_client_key,
             Some(&mut self.replay_protection),
-        )?;
+        ) {
+            Ok(packet) => packet,
+            Err(NetcodeError::Crypto(_)) => {
+                log::debug!("client ignored packet because it failed to decrypt");
+                return Ok(0);
+            }
+            Err(e) => {
+                log::error!("client ignored packet: {e}");
+                return Ok(0);
+            }
+        };
         let size = if let Packet::Payload(ref packet) = packet {
             packet.buf.len()
         } else {
@@ -519,7 +533,7 @@ mod tests {
             Ok(Self {
                 transceiver: sim,
                 state: ClientState::Disconnected,
-                time: time_now_secs_f64(),
+                time: 0.0,
                 start_time: 0.0,
                 last_send_time: f64::NEG_INFINITY,
                 last_receive_time: f64::NEG_INFINITY,

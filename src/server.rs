@@ -606,6 +606,10 @@ impl<T: Transceiver, S> Server<T, S> {
         }
         Ok(())
     }
+    /// Gets the local `SocketAddr` this server is bound to.
+    pub fn addr(&self) -> SocketAddr {
+        self.transceiver.addr()
+    }
     /// Creates a connect token builder for a given public server address and client ID.
     /// The builder can be used to configure the token with additional data before generating the final token.
     /// The `generate` method must be called on the builder to generate the final token.
@@ -731,7 +735,7 @@ pub mod tests {
     use std::{cell::RefCell, rc::Rc};
     impl Server<Rc<RefCell<NetworkSimulator>>> {
         pub fn with_simulator(sim: Rc<RefCell<NetworkSimulator>>) -> Result<Self> {
-            let time = time_now_secs_f64();
+            let time = 0.0;
             log::info!("server started on {}", sim.borrow().addr());
             let server = Server {
                 transceiver: sim,

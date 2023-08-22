@@ -1,17 +1,10 @@
 use std::{
     cell::RefCell,
-    collections::VecDeque,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::mpsc::{Receiver, Sender},
 };
 
-use crate::{
-    consts::MAX_CLIENTS, crypto, error::NetcodeError, server::Server, time::time_now_secs_f64,
-    transceiver::Transceiver,
-};
-
-const MAX_RECEIVE_PACKETS: usize = 64;
-const NUM_PACKET_ENTRIES: usize = 256 * MAX_CLIENTS;
-const NUM_PENDING_RECEIVE_PACKETS: usize = MAX_RECEIVE_PACKETS * MAX_CLIENTS;
+use crate::{server::Server, transceiver::Transceiver};
 
 #[derive(Debug, Clone)]
 pub struct PacketEntry {
@@ -19,6 +12,11 @@ pub struct PacketEntry {
     pub to: SocketAddr,
     pub delivery_time: f64,
     pub packet: Vec<u8>,
+}
+
+pub struct Channel {
+    pub tx: Sender<PacketEntry>,
+    pub rx: Receiver<PacketEntry>,
 }
 
 pub struct NetworkSimulator {
@@ -29,9 +27,7 @@ pub struct NetworkSimulator {
     pub time: f64,
     pub current_sender: Option<SocketAddr>,
     pub current_receiver: Option<SocketAddr>,
-    pub packet_entries: RefCell<VecDeque<PacketEntry>>,
-    pub pending_receive_packets: RefCell<VecDeque<PacketEntry>>,
-    pub packet_buffers: RefCell<[Vec<u8>; MAX_RECEIVE_PACKETS]>,
+    pub channel: Option<Channel>,
 }
 
 impl NetworkSimulator {
@@ -41,7 +37,6 @@ impl NetworkSimulator {
         packet_loss_percent: f64,
         duplicate_packet_percent: f64,
     ) -> Self {
-        const EMPTY_VEC: Vec<u8> = Vec::new();
         Self {
             latency_ms,
             jitter_ms,
@@ -50,24 +45,7 @@ impl NetworkSimulator {
             time: 0.0,
             current_sender: None,
             current_receiver: None,
-            packet_entries: RefCell::new(VecDeque::with_capacity(NUM_PACKET_ENTRIES)),
-            pending_receive_packets: RefCell::new(VecDeque::with_capacity(
-                NUM_PENDING_RECEIVE_PACKETS,
-            )),
-            packet_buffers: RefCell::new([EMPTY_VEC; MAX_RECEIVE_PACKETS]),
-        }
-    }
-
-    pub fn update(&mut self, time: f64, (sender, receiver): (SocketAddr, SocketAddr)) {
-        self.time = time;
-        self.current_sender = Some(sender);
-        self.current_receiver = Some(receiver);
-        self.pending_receive_packets.borrow_mut().clear();
-        let mut packet_entries = self.packet_entries.borrow_mut();
-        while let Some(entry) = packet_entries.pop_front() {
-            if entry.delivery_time <= time {
-                self.pending_receive_packets.borrow_mut().push_back(entry);
-            }
+            channel: None,
         }
     }
 }
@@ -86,22 +64,19 @@ impl Transceiver for NetworkSimulator {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 40000)
     }
 
-    fn recv(&self, _buf: &mut [u8]) -> Result<(usize, Option<SocketAddr>), Self::Error> {
+    fn recv(&self, buf: &mut [u8]) -> Result<(usize, Option<SocketAddr>), Self::Error> {
         let Some(to) = self.current_receiver else {
             return Ok((0, None));
         };
-        let mut num_packets = 0;
-        while let Some(entry) = self.pending_receive_packets.borrow_mut().pop_front() {
-            if num_packets >= MAX_RECEIVE_PACKETS {
-                break;
-            }
+        if let Some(entry) = self.channel.as_ref().and_then(|c| c.rx.try_recv().ok()) {
             if entry.to != to {
-                continue;
+                return Ok((0, None));
             }
-            self.packet_buffers.borrow_mut()[num_packets] = entry.packet;
-            num_packets += 1;
+            let len = entry.packet.len();
+            buf[..len].copy_from_slice(&entry.packet[..len]);
+            return Ok((len, Some(entry.from)));
         }
-        Ok((num_packets, None))
+        Ok((0, None))
     }
     fn send(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Self::Error> {
         let Some(from) = self.current_sender else {
@@ -120,56 +95,56 @@ impl Transceiver for NetworkSimulator {
             delivery_time: self.time + delay,
             packet: buf.to_vec(),
         };
-        self.packet_entries.borrow_mut().push_back(entry.clone());
+        self.channel.as_ref().map(|c| c.tx.send(entry.clone()));
         if rand_float(0.0..100.) < self.duplicate_packet_percent {
             entry.delivery_time += rand_float(0.0..1.);
-            self.packet_entries.borrow_mut().push_back(entry);
+            self.channel.as_ref().map(|c| c.tx.send(entry));
         }
         Ok(buf.len())
     }
 }
 
 mod tests {
-    use std::rc::Rc;
+    use std::{rc::Rc, sync::mpsc};
 
-    use env_logger::Builder;
-    use log::LevelFilter;
-
-    use crate::{
-        client::{Client, ClientState},
-        token::ConnectToken,
-    };
+    use crate::client::{Client, ClientState};
 
     use super::*;
 
     #[test]
     fn client_connect_server() {
-        Builder::new().filter(None, LevelFilter::Trace).init();
-        let simulator = NetworkSimulator::new(250.0, 250.0, 5.0, 10.0);
+        let mut simulator = NetworkSimulator::new(250.0, 250.0, 5.0, 10.0);
+        let (tx, rx) = mpsc::channel::<PacketEntry>();
+        simulator.channel = Some(Channel { tx, rx });
         let simulator = Rc::new(RefCell::new(simulator));
 
-        let mut time = time_now_secs_f64();
+        let mut time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
         let delta = 1. / 10.;
 
-        let addr = simulator.addr();
-        let token = ConnectToken::build(addr, 0, 0, 0)
-            .timeout_seconds(-1)
+        let mut server = Server::with_simulator(simulator.clone()).unwrap();
+
+        let token = server
+            .token(123u64)
             .expire_seconds(-1)
+            .timeout_seconds(-1)
             .generate()
             .unwrap();
 
-        let mut server = Server::with_simulator(simulator.clone()).unwrap();
         let mut client = Client::with_simulator(token, simulator.clone()).unwrap();
+
+        simulator.borrow_mut().current_sender = Some(client.addr());
+        simulator.borrow_mut().current_receiver = Some(server.addr());
 
         client.connect().unwrap();
 
         loop {
-            simulator.borrow_mut().update(time, (addr, addr));
+            client.recv(&mut [0; 1175]).unwrap();
             client.update(time).unwrap();
-            simulator.borrow_mut().update(time, (addr, addr));
             server.recv(&mut [0; 1175]).unwrap();
             server.update(time).unwrap();
-            client.recv(&mut [0; 1175]).unwrap();
 
             if client.state() == ClientState::Connected {
                 break;
