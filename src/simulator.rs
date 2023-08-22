@@ -131,25 +131,30 @@ where
 mod tests {
     use std::{rc::Rc, sync::mpsc};
 
-    use crate::client::{Client, ClientState};
+    use crate::{
+        client::{Client, ClientState},
+        consts::DEFAULT_CONNECTION_TIMEOUT_SECONDS,
+    };
 
     use super::*;
 
+    #[allow(dead_code)]
+    fn enable_logging() {
+        env_logger::Builder::new()
+            .filter(None, log::LevelFilter::Trace)
+            .init();
+    }
+
     #[test]
     fn client_server_connect_send_recv() {
-        // env_logger::Builder::new()
-        //     .filter(None, log::LevelFilter::Trace)
-        //     .init();
+        // enable_logging();
 
         let mut simulator = NetworkSimulator::new(250.0, 250.0, 50.0, 75.0);
         let (tx, rx) = mpsc::channel::<PacketEntry>();
         simulator.channel = Some(Channel { tx, rx });
         let simulator = Rc::new(RefCell::new(simulator));
 
-        let mut time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
+        let mut time = 0.0;
         let delta = 1. / 10.;
 
         let mut server = Server::with_simulator(simulator.clone()).unwrap();
@@ -169,10 +174,10 @@ mod tests {
         client.connect().unwrap();
 
         loop {
-            client.recv(&mut [0; 1175]).unwrap();
             client.update(time).unwrap();
-            server.recv(&mut [0; 1175]).unwrap();
+            client.recv(&mut [0; 1175]).unwrap();
             server.update(time).unwrap();
+            server.recv(&mut [0; 1175]).unwrap();
 
             if client.state() == ClientState::Connected {
                 break;
@@ -183,6 +188,7 @@ mod tests {
 
         let mut payload = vec![b'a'];
         loop {
+            client.update(time).unwrap();
             client.send(&payload).unwrap();
             let mut buf = [0; 1175];
             let size = client.recv(&mut buf).unwrap();
@@ -190,8 +196,8 @@ mod tests {
                 payload = buf[..size].to_vec();
                 payload.push(payload.last().unwrap() + 1);
             }
-            client.update(time).unwrap();
 
+            server.update(time).unwrap();
             let mut buf = [0; 1175];
             let size = server.recv(&mut buf).unwrap();
             if size > 0 {
@@ -199,7 +205,6 @@ mod tests {
                 payload.push(payload.last().unwrap() + 1);
             }
             server.send(&payload, 0).unwrap();
-            server.update(time).unwrap();
 
             if payload.contains(&(b'z')) {
                 break;
@@ -208,5 +213,99 @@ mod tests {
             time += delta;
         }
         assert_eq!(payload, b"abcdefghijklmnopqrstuvwxyz");
+    }
+
+    #[test]
+    fn client_server_timeout() {
+        // enable_logging();
+
+        let mut simulator = NetworkSimulator::new(250.0, 250.0, 5.0, 10.0);
+        let (tx, rx) = mpsc::channel::<PacketEntry>();
+        simulator.channel = Some(Channel { tx, rx });
+        let simulator = Rc::new(RefCell::new(simulator));
+
+        let mut time = 0.0;
+        let delta = 1. / 10.;
+
+        let mut server = Server::with_simulator(simulator.clone()).unwrap();
+
+        let token = server.token(123u64).generate().unwrap();
+
+        let mut client = Client::with_simulator(token, simulator.clone()).unwrap();
+
+        simulator.borrow_mut().current_sender = Some(client.addr());
+        simulator.borrow_mut().current_receiver = Some(server.addr());
+
+        client.connect().unwrap();
+
+        // connect client
+        loop {
+            client.update(time).unwrap();
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time).unwrap();
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_connected() || client.is_error() {
+                break;
+            }
+
+            time += delta;
+        }
+        assert!(client.is_connected());
+
+        // now don't update server for a while and ensure client times out
+        let num_iterations =
+            (1.5 * DEFAULT_CONNECTION_TIMEOUT_SECONDS as f64 / delta).ceil() as usize;
+        for _ in 0..num_iterations {
+            client.update(time).unwrap();
+            client.recv(&mut [0; 1175]).unwrap();
+
+            time += delta;
+        }
+        assert!(client.is_error());
+        assert!(client.state() == ClientState::ConnectionTimedOut);
+    }
+
+    #[test]
+    fn client_server_keep_alive() {
+        // enable_logging();
+
+        let mut simulator = NetworkSimulator::new(250.0, 250.0, 5.0, 10.0);
+        let (tx, rx) = mpsc::channel::<PacketEntry>();
+        simulator.channel = Some(Channel { tx, rx });
+        let simulator = Rc::new(RefCell::new(simulator));
+
+        let mut time = 0.0;
+        let delta = 1. / 10.;
+
+        let mut server = Server::with_simulator(simulator.clone()).unwrap();
+
+        let token = server.token(123u64).generate().unwrap();
+
+        let mut client = Client::with_simulator(token, simulator.clone()).unwrap();
+
+        simulator.borrow_mut().current_sender = Some(client.addr());
+        simulator.borrow_mut().current_receiver = Some(server.addr());
+
+        client.connect().unwrap();
+
+        let num_iterations =
+            (1.5 * DEFAULT_CONNECTION_TIMEOUT_SECONDS as f64 / delta).ceil() as usize;
+        let mut iterations_done = 0;
+        for i in 0..num_iterations {
+            client.update(time).unwrap();
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time).unwrap();
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_connected() || client.is_error() {
+                break;
+            }
+
+            time += delta;
+            iterations_done = i;
+        }
+        assert!(client.is_connected());
+        assert!(iterations_done < num_iterations);
     }
 }
