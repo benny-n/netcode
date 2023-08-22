@@ -1,4 +1,4 @@
-use std::{cell::RefCell, net::SocketAddr, rc::Rc};
+use std::net::SocketAddr;
 
 use crate::error::NetcodeError;
 
@@ -12,20 +12,4 @@ pub trait Transceiver {
     fn addr(&self) -> SocketAddr;
     fn recv(&self, buf: &mut [u8]) -> Result<(usize, Option<SocketAddr>), Self::Error>;
     fn send(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Self::Error>;
-}
-
-impl<T> Transceiver for Rc<RefCell<T>>
-where
-    T: Transceiver,
-{
-    type Error = T::Error;
-    fn addr(&self) -> SocketAddr {
-        self.borrow().addr()
-    }
-    fn recv(&self, buf: &mut [u8]) -> Result<(usize, Option<SocketAddr>), Self::Error> {
-        self.borrow().recv(buf)
-    }
-    fn send(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Self::Error> {
-        self.borrow().send(buf, addr)
-    }
 }

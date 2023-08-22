@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
+    net::{SocketAddr, UdpSocket},
+    rc::Rc,
     sync::mpsc::{Receiver, Sender},
 };
 
@@ -88,6 +89,7 @@ impl Transceiver for NetworkSimulator {
             return Ok(0);
         };
         if rand_float(0.0..100.) < self.packet_loss_percent {
+            log::error!("packet lost {}", buf[0] & 0xF);
             return Ok(0);
         }
         let mut delay = self.latency_ms / 1000.0;
@@ -110,6 +112,22 @@ impl Transceiver for NetworkSimulator {
     }
 }
 
+impl<T> Transceiver for Rc<RefCell<T>>
+where
+    T: Transceiver,
+{
+    type Error = T::Error;
+    fn addr(&self) -> SocketAddr {
+        self.borrow().addr()
+    }
+    fn recv(&self, buf: &mut [u8]) -> Result<(usize, Option<SocketAddr>), Self::Error> {
+        self.borrow().recv(buf)
+    }
+    fn send(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Self::Error> {
+        self.borrow().send(buf, addr)
+    }
+}
+
 mod tests {
     use std::{rc::Rc, sync::mpsc};
 
@@ -118,12 +136,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_server_connect() {
-        env_logger::Builder::new()
-            .filter(None, log::LevelFilter::Trace)
-            .init();
+    fn client_server_connect_send_recv() {
+        // env_logger::Builder::new()
+        //     .filter(None, log::LevelFilter::Trace)
+        //     .init();
 
-        let mut simulator = NetworkSimulator::new(250.0, 250.0, 5.0, 0.0);
+        let mut simulator = NetworkSimulator::new(250.0, 250.0, 50.0, 75.0);
         let (tx, rx) = mpsc::channel::<PacketEntry>();
         simulator.channel = Some(Channel { tx, rx });
         let simulator = Rc::new(RefCell::new(simulator));
@@ -161,42 +179,34 @@ mod tests {
             }
 
             time += delta;
-            std::thread::sleep(std::time::Duration::from_secs_f64(delta));
         }
 
-        // let mut payload = vec![b'a'];
-        // loop {
-        //     println!(
-        //         "payload: {}",
-        //         std::str::from_utf8(payload.as_slice()).unwrap()
-        //     );
-        //     client.send(&payload).unwrap();
-        //     let mut buf = [0; 1175];
-        //     let size = client.recv(&mut buf).unwrap();
-        //     if size > 0 {
-        //         payload = buf[..size].to_vec();
-        //         payload.push(payload.last().unwrap() + 1);
-        //     }
-        //     client.update(time).unwrap();
+        let mut payload = vec![b'a'];
+        loop {
+            client.send(&payload).unwrap();
+            let mut buf = [0; 1175];
+            let size = client.recv(&mut buf).unwrap();
+            if size > 0 {
+                payload = buf[..size].to_vec();
+                payload.push(payload.last().unwrap() + 1);
+            }
+            client.update(time).unwrap();
 
-        //     let mut buf = [0; 1175];
-        //     let size = server.recv(&mut buf).unwrap();
-        //     if size > 0 {
-        //         payload = buf[..size].to_vec();
-        //         payload.push(payload.last().unwrap() + 1);
-        //     }
-        //     server.send(&payload, 0).unwrap();
-        //     server.update(time).unwrap();
+            let mut buf = [0; 1175];
+            let size = server.recv(&mut buf).unwrap();
+            if size > 0 {
+                payload = buf[..size].to_vec();
+                payload.push(payload.last().unwrap() + 1);
+            }
+            server.send(&payload, 0).unwrap();
+            server.update(time).unwrap();
 
-        //     if payload.contains(&(b'z')) {
-        //         break;
-        //     }
+            if payload.contains(&(b'z')) {
+                break;
+            }
 
-        //     time += delta;
-        // }
-        // assert_eq!(
-        //     std::str::from_utf8(&payload).unwrap(),
-        //     "abcdefghijklmnopqrstuvwxyz"
-        // );
+            time += delta;
+        }
+        assert_eq!(payload, b"abcdefghijklmnopqrstuvwxyz");
     }
 }
