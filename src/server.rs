@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::bytes::Bytes;
 use crate::consts::{MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE};
@@ -13,7 +14,6 @@ use crate::packet::{
 };
 use crate::replay::ReplayProtection;
 use crate::socket::NetcodeSocket;
-use crate::time::{time_now_secs, time_now_secs_f64};
 use crate::token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate};
 use crate::transceiver::Transceiver;
 
@@ -279,10 +279,9 @@ impl Server<NetcodeSocket> {
         protocol_id: u64,
         private_key: Option<Key>,
     ) -> Result<Server<NetcodeSocket, ()>> {
-        let time = time_now_secs_f64();
         let server: Server<_, ()> = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
-            time,
+            time: 0.0,
             private_key: private_key.unwrap_or(crypto::generate_key()?),
             max_clients: MAX_CLIENTS,
             protocol_id,
@@ -290,7 +289,7 @@ impl Server<NetcodeSocket> {
             token_sequence: 0,
             challenge_sequence: 0,
             challenge_key: crypto::generate_key()?,
-            conn_cache: ConnectionCache::new(time),
+            conn_cache: ConnectionCache::new(0.0),
             token_entries: HashMap::new(),
             cfg: ServerConfig::default(),
         };
@@ -325,10 +324,9 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
         private_key: Option<Key>,
         cfg: ServerConfig<Ctx>,
     ) -> Result<Self> {
-        let time = time_now_secs_f64();
         let server = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
-            time,
+            time: 0.0,
             private_key: private_key.unwrap_or(crypto::generate_key()?),
             max_clients: MAX_CLIENTS,
             protocol_id,
@@ -336,7 +334,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
             token_sequence: 0,
             challenge_sequence: 0,
             challenge_key: crypto::generate_key()?,
-            conn_cache: ConnectionCache::new(time),
+            conn_cache: ConnectionCache::new(0.0),
             token_entries: HashMap::new(),
             cfg,
         };
@@ -551,6 +549,10 @@ impl<T: Transceiver, S> Server<T, S> {
             )?;
             return Ok(());
         };
+        if self.conn_cache.clients[idx].is_connected() {
+            log::debug!("server ignored connection response. client is already connected");
+            return Ok(());
+        };
         self.conn_cache.clients[idx].connect();
         self.conn_cache.clients[idx].expire_time = -1.0; // TODO: check if this is correct
         self.conn_cache.clients[idx].sequence = 0;
@@ -614,13 +616,12 @@ impl<T: Transceiver, S> Server<T, S> {
     /// # use netcode::server::{Server, ServerConfig};
     /// # use std::net::{SocketAddr, Ipv4Addr};
     ///  
-    /// let private_key = [42u8; 32]; // TODO: generate a real private key
+    /// let private_key = Some([42u8; 32]); // TODO: generate a real private key
     /// let protocol_id = 0x123456789ABCDEF0;
-    /// let bind_addr = "0.0.0.0:12345";
-    /// let mut server = Server::new(bind_addr, protocol_id, Some(private_key)).unwrap();
+    /// let bind_addr = "0.0.0.0:0";
+    /// let mut server = Server::new(bind_addr, protocol_id, private_key).unwrap();
     ///
     /// let client_id = 123u64;
-    /// let public_addr = "localhost:12345"; // TODO: replace with your public address
     /// let token = server.token(client_id)
     ///     .expire_seconds(60)  // optional - default is 30 seconds. negative values would make the token never expire.
     ///     .timeout_seconds(-1) // optional - default is 15 seconds. negative values would make the token never timeout.
@@ -648,7 +649,7 @@ impl<T: Transceiver, S> Server<T, S> {
         Ok(())
     }
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let now = time_now_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let (size, addr) = self.transceiver.recv(buf).map_err(|e| e.into())?;
         let Some(addr) = addr else {
             // No packet received
@@ -672,13 +673,23 @@ impl<T: Transceiver, S> Server<T, S> {
                 return Ok(0);
             }
         };
-        let packet = Packet::read(
+        let packet = match Packet::read(
             &mut buf[..size],
             self.protocol_id,
             now,
             key,
             replay_protection,
-        )?;
+        ) {
+            Ok(packet) => packet,
+            Err(NetcodeError::Crypto(_)) => {
+                log::debug!("server ignored packet because it failed to decrypt");
+                return Ok(0);
+            }
+            Err(e) => {
+                log::error!("server ignored packet: {e}");
+                return Ok(0);
+            }
+        };
         let size = if let Packet::Payload(ref packet) = packet {
             packet.buf.len()
         } else {

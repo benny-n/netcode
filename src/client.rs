@@ -1,4 +1,7 @@
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::{
     bytes::Bytes,
@@ -9,7 +12,6 @@ use crate::{
     },
     replay::ReplayProtection,
     socket::NetcodeSocket,
-    time::{time_now_secs, time_now_secs_f64},
     token::{ChallengeToken, ConnectToken},
     transceiver::Transceiver,
 };
@@ -172,7 +174,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
         Ok(Self {
             transceiver: NetcodeSocket::default(),
             state: ClientState::Disconnected,
-            time: time_now_secs_f64(),
+            time: 0.0,
             start_time: 0.0,
             last_send_time: f64::NEG_INFINITY,
             last_receive_time: f64::NEG_INFINITY,
@@ -423,7 +425,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
     }
     // TODO: document
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let now = time_now_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let (size, addr) = self.transceiver.recv(buf).map_err(|e| e.into())?;
         let Some(addr) = addr else {
             // No packet received
