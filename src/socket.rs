@@ -1,5 +1,5 @@
 use std::io::{self};
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 
 use socket2::{Domain, Protocol, Socket, Type};
 
@@ -28,6 +28,12 @@ impl NetcodeSocket {
         socket.bind(&addr.into())?;
         socket.set_nonblocking(true)?;
         Ok(NetcodeSocket(socket.into()))
+    }
+}
+
+impl Default for NetcodeSocket {
+    fn default() -> Self {
+        Self::new((Ipv4Addr::UNSPECIFIED, 0)).expect("bind to unspecified address should succeed")
     }
 }
 

@@ -1,6 +1,17 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    io::{self, BufRead},
+    sync::mpsc::{self, RecvTimeoutError},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use netcode::server::{Server, ServerConfig};
+use env_logger::Builder;
+use log::LevelFilter;
+
+use netcode::{
+    client::{Client, ClientState},
+    server::{Server, ServerConfig},
+};
 
 fn time_now_secs_f64() -> f64 {
     SystemTime::now()
@@ -9,19 +20,12 @@ fn time_now_secs_f64() -> f64 {
         .as_secs_f64()
 }
 fn main() {
-    use env_logger::Builder;
-    use log::LevelFilter;
-
-    Builder::new().filter(None, LevelFilter::Debug).init();
+    Builder::new().filter(None, LevelFilter::Info).init();
 
     let my_secret_private_key = [0u8; 32]; // TODO: generate a real private key
-    let cfg = ServerConfig::with_state(42)
-        .on_connect(|_, _| {
-            log::info!("on_connect");
-        })
-        .on_disconnect(|_, _| {
-            log::info!("on_disconnect");
-        });
+    let cfg = ServerConfig::with_context(42).on_connect(|client_idx, _| {
+        log::info!("`on_connect` callback called for client {}", client_idx);
+    });
     let mut server = Server::with_config(
         "127.0.0.1:12345".parse().unwrap(),
         0x11223344,
@@ -31,20 +35,17 @@ fn main() {
     .unwrap();
     let client_id = 123u64;
     let token = server
-        .token("127.0.0.1:12345", client_id)
-        // .internal_address_list(AddressList::new("127.0.0.1:9001").unwrap()) // default is equal to the addresses provided to `token` method
-        // .token_expire_secs(30) // default is -1, which means the token never expires
-        .timeout_seconds(15) // default is -1 which means the connection never times out
+        .token(client_id)
+        .expire_seconds(-1)
+        .timeout_seconds(-1)
         .generate()
         .unwrap();
 
     let buf = token.try_into_bytes().unwrap();
-    // write bytes to file
-    std::fs::write("../netcode-rs/token.bin", buf).unwrap();
 
-    let server_thread = std::thread::spawn(move || {
+    let server_thread = thread::spawn(move || {
         loop {
-            std::thread::sleep(std::time::Duration::from_secs_f64(1.0 / 60.0));
+            thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
             let now = time_now_secs_f64();
             server.update(now).unwrap();
 
@@ -52,7 +53,7 @@ fn main() {
             let received = server.recv(&mut packet).unwrap();
             if received > 0 {
                 println!(
-                    "received: {}",
+                    "server received: {}",
                     std::str::from_utf8(&packet[..received]).unwrap()
                 );
                 // echoing back
@@ -61,21 +62,44 @@ fn main() {
         }
     });
 
-    server_thread.join().unwrap();
-    // loop {
-    //     std::thread::sleep(std::time::Duration::from_secs_f64(1.0 / 60.0));
-    //     let now = time_now_secs_f64();
-    //     server.update(now).unwrap();
+    let mut client = Client::new(&buf).unwrap();
+    client.connect().unwrap();
 
-    //     let mut packet = [0; 1175];
-    //     let received = server.recv(&mut packet).unwrap();
-    //     if received > 0 {
-    //         println!(
-    //             "received: {}",
-    //             std::str::from_utf8(&packet[..received]).unwrap()
-    //         );
-    //         // echoing back
-    //         server.send(&packet[..received], 0).unwrap();
-    //     }
-    // }
+    let (tx, rx) = mpsc::channel::<String>();
+    let client_thread = thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
+            let now = time_now_secs_f64();
+            client.update(now).unwrap();
+
+            let mut packet = [0; 1175];
+            let received = client.recv(&mut packet).unwrap();
+            if received > 0 {
+                println!(
+                    "echoed back: {}",
+                    std::str::from_utf8(&packet[..received]).unwrap()
+                );
+                // echoing back
+            }
+            if let ClientState::Connected = client.state() {
+                match rx.recv_timeout(Duration::from_millis(16)) {
+                    Ok(msg) => {
+                        if !msg.is_empty() {
+                            client.send(msg.as_bytes()).unwrap();
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+    });
+
+    for line in io::stdin().lock().lines() {
+        let input = line.unwrap();
+        tx.send(input.clone()).unwrap();
+    }
+
+    client_thread.join().unwrap();
+    server_thread.join().unwrap();
 }

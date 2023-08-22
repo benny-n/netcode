@@ -76,6 +76,20 @@ pub struct RequestPacket {
 }
 
 impl RequestPacket {
+    pub(crate) fn create(
+        protocol_id: u64,
+        expire_timestamp: u64,
+        token_nonce: u64,
+        token_data: [u8; ConnectTokenPrivate::SIZE],
+    ) -> Packet<'static> {
+        Packet::Request(RequestPacket {
+            version_info: *NETCODE_VERSION,
+            protocol_id,
+            expire_timestamp,
+            token_nonce,
+            token_data,
+        })
+    }
     pub(crate) fn validate(&self, protocol_id: u64, current_timestamp: u64) -> Result<(), Error> {
         if &self.version_info != NETCODE_VERSION {
             return Err(Error::BadVersion);
@@ -185,6 +199,17 @@ pub struct ResponsePacket {
     pub sequence: u64,
     pub token: [u8; ChallengeToken::SIZE],
 }
+impl ResponsePacket {
+    pub(crate) fn create(
+        sequence: u64,
+        token_bytes: [u8; ChallengeToken::SIZE],
+    ) -> Packet<'static> {
+        Packet::Response(ResponsePacket {
+            sequence,
+            token: token_bytes,
+        })
+    }
+}
 impl Bytes for ResponsePacket {
     fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
         writer.write_u64::<LittleEndian>(self.sequence)?;
@@ -255,7 +280,7 @@ impl Bytes for DisconnectPacket {
 }
 
 #[allow(clippy::large_enum_variant)]
-// TODO: think about how to handle this clippy warning (not neccessarily a bad thing)
+// TODO: think about how to handle this clippy warning (not necessarily a bad thing)
 pub enum Packet<'p> {
     Request(RequestPacket),
     Denied(DeniedPacket),
