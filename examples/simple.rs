@@ -17,17 +17,15 @@ fn main() {
 
     // Generate a connection token for the client
     let token_bytes = server
-        .token("127.0.0.1:12345", 123u64)
+        .token(123u64)
         .generate()
         .unwrap()
         .try_into_bytes()
         .unwrap();
 
     // Start the client
-    let mut client = Client::new("127.0.0.1:12346")
-        .unwrap()
-        .connect(&token_bytes)
-        .unwrap();
+    let mut client = Client::new(&token_bytes).unwrap();
+    client.connect().unwrap();
 
     // Run the server and client in parallel
     let server_thread = std::thread::spawn(move || loop {

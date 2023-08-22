@@ -152,7 +152,6 @@ impl ConnectionCache {
         }
     }
 }
-// type Ctx = Box<dyn std::any::Any + Send + Sync + 'static>;
 type Callback<Ctx> = Box<dyn FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync + 'static>;
 /// Configuration for a server.
 ///
@@ -280,7 +279,7 @@ impl Server<NetcodeSocket> {
         protocol_id: u64,
         private_key: Option<Key>,
     ) -> Result<Server<NetcodeSocket, ()>> {
-        let time = time_now_secs_f64()?;
+        let time = time_now_secs_f64();
         let server: Server<_, ()> = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
             time,
@@ -326,7 +325,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
         private_key: Option<Key>,
         cfg: ServerConfig<Ctx>,
     ) -> Result<Self> {
-        let time = time_now_secs_f64()?;
+        let time = time_now_secs_f64();
         let server = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
             time,
@@ -633,7 +632,7 @@ impl<T: Transceiver, S> Server<T, S> {
     ///
     /// let client_id = 123u64;
     /// let public_addr = "localhost:12345"; // TODO: replace with your public address
-    /// let token = server.token(public_addr, client_id)
+    /// let token = server.token(client_id)
     ///     .expire_seconds(60)  // optional - default is 30 seconds. negative values would make the token never expire.
     ///     .timeout_seconds(-1) // optional - default is 15 seconds. negative values would make the token never timeout.
     ///     .generate()
@@ -641,13 +640,9 @@ impl<T: Transceiver, S> Server<T, S> {
     /// ```
     ///
     /// See [`ConnectTokenBuilder`](ConnectTokenBuilder) for more options.
-    pub fn token(
-        &mut self,
-        public_addr: impl ToSocketAddrs,
-        client_id: u64,
-    ) -> ConnectTokenBuilder<impl ToSocketAddrs> {
+    pub fn token(&mut self, client_id: u64) -> ConnectTokenBuilder<SocketAddr> {
         let token_builder = ConnectToken::build(
-            public_addr,
+            self.transceiver.addr(),
             self.protocol_id,
             client_id,
             self.token_sequence,
@@ -664,7 +659,7 @@ impl<T: Transceiver, S> Server<T, S> {
         Ok(())
     }
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let now = time_now_secs()?;
+        let now = time_now_secs();
         let (size, addr) = self.transceiver.recv(buf).map_err(|e| e.into())?;
         let Some(addr) = addr else {
             // No packet received

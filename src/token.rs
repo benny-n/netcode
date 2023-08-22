@@ -87,6 +87,14 @@ impl Bytes for AddressList {
 
     fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
         let len = reader.read_u32::<LittleEndian>()?;
+
+        if !(1..=MAX_SERVERS_PER_CONNECT as u32).contains(&len) {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("invalid address list length {}", len),
+            ));
+        }
+
         let mut addrs = FreeList::new();
 
         for _ in 0..len {
@@ -257,16 +265,16 @@ impl Bytes for ChallengeToken {
 
 // TODO: document
 pub struct ConnectToken {
-    pub version_info: [u8; NETCODE_VERSION.len()],
-    pub protocol_id: u64,
-    pub create_timestamp: u64,
-    pub expire_timestamp: u64,
-    pub nonce: u64,
-    pub private_data: [u8; ConnectTokenPrivate::SIZE],
-    pub timeout_seconds: i32,
-    pub server_addresses: AddressList,
-    pub client_to_server_key: Key,
-    pub server_to_client_key: Key,
+    pub(crate) version_info: [u8; NETCODE_VERSION.len()],
+    pub(crate) protocol_id: u64,
+    pub(crate) create_timestamp: u64,
+    pub(crate) expire_timestamp: u64,
+    pub(crate) nonce: u64,
+    pub(crate) private_data: [u8; ConnectTokenPrivate::SIZE],
+    pub(crate) timeout_seconds: i32,
+    pub(crate) server_addresses: AddressList,
+    pub(crate) client_to_server_key: Key,
+    pub(crate) server_to_client_key: Key,
 }
 
 // TODO: document
@@ -412,9 +420,22 @@ impl Bytes for ConnectToken {
         let mut version_info = [0; NETCODE_VERSION.len()];
         reader.read_exact(&mut version_info)?;
 
+        if version_info != *NETCODE_VERSION {
+            return Err(io::Error::new(io::ErrorKind::Other, "invalid version info"));
+        }
+
         let protocol_id = reader.read_u64::<LittleEndian>()?;
+
         let create_timestamp = reader.read_u64::<LittleEndian>()?;
         let expire_timestamp = reader.read_u64::<LittleEndian>()?;
+
+        if create_timestamp > expire_timestamp {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "invalid expire timestamp",
+            ));
+        }
+
         let nonce = reader.read_u64::<LittleEndian>()?;
 
         let mut private_data = [0; ConnectTokenPrivate::SIZE];

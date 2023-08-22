@@ -35,7 +35,7 @@ fn main() {
     .unwrap();
     let client_id = 123u64;
     let token = server
-        .token("127.0.0.1:12345", client_id)
+        .token(client_id)
         .expire_seconds(-1)
         .timeout_seconds(-1)
         .generate()
@@ -62,10 +62,8 @@ fn main() {
         }
     });
 
-    let mut client = Client::new("127.0.0.1:12346")
-        .unwrap()
-        .connect(&buf)
-        .unwrap();
+    let mut client = Client::new(&buf).unwrap();
+    client.connect().unwrap();
 
     let (tx, rx) = mpsc::channel::<String>();
     let client_thread = thread::spawn(move || {
