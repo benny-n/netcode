@@ -9,9 +9,9 @@ use crate::{
     },
     replay::ReplayProtection,
     socket::NetcodeSocket,
+    time::{time_now_secs, time_now_secs_f64},
     token::{ChallengeToken, ConnectToken},
     transceiver::Transceiver,
-    utils::{time_now_secs, time_now_secs_f64},
 };
 
 type Result<T> = std::result::Result<T, NetcodeError>;

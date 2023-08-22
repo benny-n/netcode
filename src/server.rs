@@ -13,9 +13,9 @@ use crate::packet::{
 };
 use crate::replay::ReplayProtection;
 use crate::socket::NetcodeSocket;
+use crate::time::{time_now_secs, time_now_secs_f64};
 use crate::token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate};
 use crate::transceiver::Transceiver;
-use crate::utils::{time_now_secs, time_now_secs_f64};
 
 // Re-export `AddressList`
 pub use crate::token::AddressList;
