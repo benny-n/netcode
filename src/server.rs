@@ -2,21 +2,21 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::bytes::Bytes;
-use crate::consts::{MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE};
-use crate::crypto::{self, Key};
-use crate::error::NetcodeError;
-use crate::free_list::FreeList;
-use crate::packet::{
-    ChallengePacket, DeniedPacket, DisconnectPacket, KeepAlivePacket, Packet, PayloadPacket,
-    RequestPacket, ResponsePacket,
+use crate::{
+    bytes::Bytes,
+    consts::{MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE},
+    crypto::{self, Key},
+    error::{Error, Result},
+    free_list::FreeList,
+    packet::{
+        ChallengePacket, DeniedPacket, DisconnectPacket, KeepAlivePacket, Packet, PayloadPacket,
+        RequestPacket, ResponsePacket,
+    },
+    replay::ReplayProtection,
+    socket::NetcodeSocket,
+    token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate},
+    transceiver::Transceiver,
 };
-use crate::replay::ReplayProtection;
-use crate::socket::NetcodeSocket;
-use crate::token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate};
-use crate::transceiver::Transceiver;
-
-type Result<T> = std::result::Result<T, NetcodeError>;
 
 #[derive(Clone, Copy)]
 struct TokenEntry {
@@ -470,7 +470,7 @@ impl<T: Transceiver, S> Server<T, S> {
                 }
                 Ok(())
             }
-            _ => Err(NetcodeError::InvalidPacket)?,
+            _ => unreachable!("packet should have been filtered out by `ALLOWED_PACKETS`"),
         }
     }
     fn send_to_addr(&mut self, packet: Packet, addr: SocketAddr, key: Key) -> Result<()> {
@@ -560,7 +560,7 @@ impl<T: Transceiver, S> Server<T, S> {
             addr: from_addr,
             mac: packet.token_data[ConnectTokenPrivate::SIZE - MAC_SIZE..ConnectTokenPrivate::SIZE]
                 .try_into()
-                .map_err(|_| NetcodeError::InvalidPacket)?,
+                .expect("valid MAC size"),
         };
         if !self.token_entries.find_or_insert(entry) {
             log::debug!("server ignored connection request. connect token has already been used");
@@ -768,7 +768,7 @@ impl<T: Transceiver, S> Server<T, S> {
             Self::ALLOWED_PACKETS,
         ) {
             Ok(packet) => packet,
-            Err(NetcodeError::Crypto(_)) => {
+            Err(Error::Crypto(_)) => {
                 log::debug!("server ignored packet because it failed to decrypt");
                 return Ok(None);
             }
@@ -790,10 +790,10 @@ impl<T: Transceiver, S> Server<T, S> {
     }
     pub fn send(&mut self, buf: &[u8], client_idx: ClientIndex) -> Result<()> {
         if buf.len() > MAX_PAYLOAD_SIZE {
-            return Err(NetcodeError::PacketSizeExceeded(buf.len()));
+            return Err(Error::SizeMismatch(MAX_PAYLOAD_SIZE, buf.len()));
         }
         let Some(conn) = self.conn_cache.clients.get_mut(client_idx.0) else {
-            return Err(NetcodeError::ClientNotFound);
+            return Err(Error::ClientNotFound);
         };
         if !conn.connected {
             // client is not yet connected, but this shouldn't be an error as the client may be sending a connection request

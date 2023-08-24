@@ -167,7 +167,7 @@ mod tests {
 
         let mut client = Client::with_simulator(token, client_sim).unwrap();
 
-        client.connect().unwrap();
+        client.connect();
 
         loop {
             client.update(time).unwrap();
@@ -230,7 +230,7 @@ mod tests {
 
         let mut client = Client::with_simulator(token, client_sim).unwrap();
 
-        client.connect().unwrap();
+        client.connect();
 
         // connect client
         loop {
@@ -279,7 +279,7 @@ mod tests {
 
         let mut client = Client::with_simulator(token, client_sim).unwrap();
 
-        client.connect().unwrap();
+        client.connect();
 
         let num_iterations =
             (1.5 * DEFAULT_CONNECTION_TIMEOUT_SECONDS as f64 / delta).ceil() as usize;
@@ -329,7 +329,7 @@ mod tests {
         ];
 
         for client in clients.iter_mut() {
-            client.connect().unwrap();
+            client.connect();
         }
 
         loop {
@@ -461,7 +461,7 @@ mod tests {
             .unwrap();
 
         let mut client = Client::with_simulator(token, client_sim).unwrap();
-        client.connect().unwrap();
+        client.connect();
 
         // connect to 1st server
         loop {

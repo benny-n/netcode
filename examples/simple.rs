@@ -25,7 +25,7 @@ fn main() {
 
     // Start the client
     let mut client = Client::new(&token_bytes).unwrap();
-    client.connect().unwrap();
+    client.connect();
 
     // Run the server and client in parallel
     let server_thread = std::thread::spawn(move || loop {

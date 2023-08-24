@@ -6,7 +6,7 @@ use std::{
 use crate::{
     bytes::Bytes,
     consts::{MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE},
-    error::NetcodeError,
+    error::{Error, Result},
     packet::{
         DisconnectPacket, KeepAlivePacket, Packet, PayloadPacket, RequestPacket, ResponsePacket,
     },
@@ -15,8 +15,6 @@ use crate::{
     token::{ChallengeToken, ConnectToken},
     transceiver::Transceiver,
 };
-
-type Result<T> = std::result::Result<T, NetcodeError>;
 
 type Callback<Ctx> =
     Box<dyn FnMut(ClientState, ClientState, Option<&mut Ctx>) + Send + Sync + 'static>;
@@ -44,7 +42,7 @@ type Callback<Ctx> =
 ///     }
 /// });
 /// let mut client = Client::with_config(&token_bytes, cfg).unwrap();
-/// client.connect().unwrap();
+/// client.connect();
 /// ```
 pub struct ClientConfig<Ctx> {
     ctx: Option<Box<Ctx>>,
@@ -157,10 +155,7 @@ pub struct Client<T: Transceiver, Ctx = ()> {
 impl<Ctx> Client<NetcodeSocket, Ctx> {
     fn from_token(token_bytes: &[u8]) -> Result<Self> {
         if token_bytes.len() != ConnectToken::SIZE {
-            return Err(NetcodeError::BufferSizeMismatch(
-                ConnectToken::SIZE,
-                token_bytes.len(),
-            ));
+            return Err(Error::SizeMismatch(ConnectToken::SIZE, token_bytes.len()));
         }
         let mut buf = [0u8; ConnectToken::SIZE];
         buf.copy_from_slice(token_bytes);
@@ -168,7 +163,8 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
         let token = match ConnectToken::read_from(&mut cursor) {
             Ok(token) => token,
             Err(err) => {
-                return Err(NetcodeError::InvalidConnectToken(err));
+                log::error!("invalid connect token: {err}");
+                return Err(Error::InvalidToken(err));
             }
         };
         Ok(Self {
@@ -208,7 +204,7 @@ impl Client<NetcodeSocket> {
     /// assert_eq!(client.state(), ClientState::Disconnected);
     ///
     /// // Connect to the server
-    /// client.connect().unwrap();
+    /// client.connect();
     /// assert_eq!(client.state(), ClientState::SendingConnectionRequest);
     /// ```
     pub fn new(token_bytes: &[u8]) -> Result<Client<NetcodeSocket>> {
@@ -242,7 +238,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     /// assert_eq!(client.state(), ClientState::Disconnected);
     ///
     /// // Connect to the server
-    /// client.connect().unwrap();
+    /// client.connect();
     /// assert_eq!(client.state(), ClientState::SendingConnectionRequest);
     /// ```
     pub fn with_config(
@@ -320,12 +316,13 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.send_packet(packet)?;
         Ok(())
     }
-    fn connect_to_next_server(&mut self) -> Result<()> {
+    fn connect_to_next_server(&mut self) -> std::result::Result<(), ()> {
         if self.server_addr_idx + 1 >= self.token.server_addresses.len() {
-            return Err(NetcodeError::NoMoreServers);
+            log::debug!("no more servers to connect to");
+            return Err(());
         }
         self.server_addr_idx += 1;
-        self.connect()?;
+        self.connect();
         Ok(())
     }
     fn send_packet(&mut self, packet: Packet) -> Result<()> {
@@ -398,7 +395,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         Ok(())
     }
     // TODO: document
-    pub fn connect(&mut self) -> Result<()> {
+    pub fn connect(&mut self) {
         self.reset_connection();
         self.set_state(ClientState::SendingConnectionRequest);
         log::info!(
@@ -407,7 +404,6 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             self.server_addr_idx + 1,
             self.token.server_addresses.len()
         );
-        Ok(())
     }
     /// Gets the local `SocketAddr` that the client is bound to.
     pub fn addr(&self) -> SocketAddr {
@@ -452,7 +448,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             Self::ALLOWED_PACKETS,
         ) {
             Ok(packet) => packet,
-            Err(NetcodeError::Crypto(_)) => {
+            Err(Error::Crypto(_)) => {
                 log::debug!("client ignored packet because it failed to decrypt");
                 return Ok(0);
             }
@@ -475,7 +471,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             return Ok(());
         }
         if buf.len() > MAX_PAYLOAD_SIZE {
-            return Err(NetcodeError::PacketSizeExceeded(buf.len()));
+            return Err(Error::SizeMismatch(MAX_PAYLOAD_SIZE, buf.len()));
         }
         self.send_packet(PayloadPacket::create(buf))?;
         Ok(())
@@ -568,10 +564,7 @@ mod tests {
         let Err(err) = Client::new(&token_bytes) else {
             panic!("expected error");
         };
-        assert_eq!(
-            "invalid connect token: invalid version info",
-            err.to_string()
-        );
+        assert_eq!("invalid connect token: bad version info", err.to_string());
         let mut token_bytes = [0u8; ConnectToken::SIZE];
         let mut cursor = std::io::Cursor::new(&mut token_bytes[..]);
         cursor.write_all(NETCODE_VERSION).unwrap();
@@ -579,7 +572,7 @@ mod tests {
             panic!("expected error");
         };
         assert_eq!(
-            "invalid connect token: invalid address list length 0",
+            "invalid connect token: address list length is out of range 1-32: 0",
             err.to_string()
         );
     }

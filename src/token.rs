@@ -7,7 +7,7 @@ use crate::{
         NETCODE_VERSION, PRIVATE_KEY_SIZE, USER_DATA_SIZE,
     },
     crypto::{self, Key},
-    error::NetcodeError,
+    error::Error,
     free_list::{FreeList, FreeListIter},
 };
 
@@ -25,7 +25,7 @@ pub(crate) struct AddressList {
 impl AddressList {
     const IPV4: u8 = 1;
     const IPV6: u8 = 2;
-    pub(crate) fn new(addrs: impl ToSocketAddrs) -> Result<Self, NetcodeError> {
+    pub(crate) fn new(addrs: impl ToSocketAddrs) -> Result<Self, Error> {
         let mut server_addresses = FreeList::new();
 
         for (i, addr) in addrs.to_socket_addrs()?.enumerate() {
@@ -86,7 +86,7 @@ impl Bytes for AddressList {
         if !(1..=MAX_SERVERS_PER_CONNECT as u32).contains(&len) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("invalid address list length {}", len),
+                format!("address list length is out of range 1-32: {}", len),
             ));
         }
 
@@ -107,10 +107,10 @@ impl Bytes for AddressList {
                     let port = reader.read_u16::<LittleEndian>()?;
                     SocketAddr::from((Ipv6Addr::from(octets), port))
                 }
-                _ => {
+                t => {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        "invalid ip address type",
+                        format!("invalid ip address type (must be 1 for ipv4 or 2 for ipv6): {t}"),
                     ))
                 }
             };
@@ -134,7 +134,7 @@ impl ConnectTokenPrivate {
     fn aead(
         protocol_id: u64,
         expire_timestamp: u64,
-    ) -> Result<[u8; NETCODE_VERSION.len() + std::mem::size_of::<u64>() * 2], NetcodeError> {
+    ) -> Result<[u8; NETCODE_VERSION.len() + std::mem::size_of::<u64>() * 2], Error> {
         let mut aead = [0; NETCODE_VERSION.len() + std::mem::size_of::<u64>() * 2];
         let mut cursor = io::Cursor::new(&mut aead[..]);
         cursor.write_all(NETCODE_VERSION)?;
@@ -149,7 +149,7 @@ impl ConnectTokenPrivate {
         expire_timestamp: u64,
         nonce: u64,
         private_key: &Key,
-    ) -> Result<[u8; Self::SIZE], NetcodeError> {
+    ) -> Result<[u8; Self::SIZE], Error> {
         let aead = Self::aead(protocol_id, expire_timestamp)?;
         let mut buf = [0u8; Self::SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
         let mut cursor = io::Cursor::new(&mut buf[..]);
@@ -164,7 +164,7 @@ impl ConnectTokenPrivate {
         expire_timestamp: u64,
         nonce: u64,
         private_key: &Key,
-    ) -> Result<Self, NetcodeError> {
+    ) -> Result<Self, Error> {
         let aead = Self::aead(protocol_id, expire_timestamp)?;
         crypto::decrypt(encrypted, Some(&aead), nonce, private_key)?;
         let mut cursor = io::Cursor::new(encrypted);
@@ -216,11 +216,7 @@ pub(crate) struct ChallengeToken {
 
 impl ChallengeToken {
     pub(crate) const SIZE: usize = 300;
-    pub fn encrypt(
-        &self,
-        sequence: u64,
-        private_key: &Key,
-    ) -> Result<[u8; Self::SIZE], NetcodeError> {
+    pub fn encrypt(&self, sequence: u64, private_key: &Key) -> Result<[u8; Self::SIZE], Error> {
         let mut buf = [0u8; Self::SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
         let mut cursor = io::Cursor::new(&mut buf[..]);
         self.write_to(&mut cursor)?;
@@ -232,7 +228,7 @@ impl ChallengeToken {
         encrypted: &mut [u8; Self::SIZE],
         sequence: u64,
         private_key: &Key,
-    ) -> Result<Self, NetcodeError> {
+    ) -> Result<Self, Error> {
         crypto::decrypt(encrypted, None, sequence, private_key)?;
         let mut cursor = io::Cursor::new(&encrypted[..]);
         Ok(Self::read_from(&mut cursor)?)
@@ -326,12 +322,12 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
     /// but you want to provide a public address that is accessible to the client.
     ///
     /// The client will always use the *public* server addresses list to connect to the server, never the *internal* ones.
-    pub fn internal_address_list(mut self, internal_addresses: A) -> Result<Self, NetcodeError> {
+    pub fn internal_address_list(mut self, internal_addresses: A) -> Result<Self, Error> {
         self.internal_server_addresses = Some(AddressList::new(internal_addresses)?);
         Ok(self)
     }
     /// Generates the token and consumes the builder.
-    pub fn generate(self) -> Result<ConnectToken, NetcodeError> {
+    pub fn generate(self) -> Result<ConnectToken, Error> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
@@ -416,7 +412,7 @@ impl Bytes for ConnectToken {
         reader.read_exact(&mut version_info)?;
 
         if version_info != *NETCODE_VERSION {
-            return Err(io::Error::new(io::ErrorKind::Other, "invalid version info"));
+            return Err(io::Error::new(io::ErrorKind::Other, "bad version info"));
         }
 
         let protocol_id = reader.read_u64::<LittleEndian>()?;
@@ -427,7 +423,7 @@ impl Bytes for ConnectToken {
         if create_timestamp > expire_timestamp {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "invalid expire timestamp",
+                "create timestamp is greater than expire timestamp",
             ));
         }
 

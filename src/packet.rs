@@ -9,12 +9,13 @@ use crate::{
     bytes::Bytes,
     consts::{MAC_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION},
     crypto::{self, Key},
-    error::NetcodeError,
+    error::Error as NetcodeError,
     replay::ReplayProtection,
     token::{ChallengeToken, ConnectTokenPrivate},
 };
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error("packet type {0} is invalid")]
     InvalidType(u8),

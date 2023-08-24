@@ -8,11 +8,10 @@ use std::io;
 use crate::consts::{MAC_SIZE, PRIVATE_KEY_SIZE};
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error("invalid public key size")]
-    InvalidPublicKeySize,
     #[error("buffer size mismatch")]
     BufferSizeMismatch,
     #[error("failed to encrypt: {0}")]
@@ -29,18 +28,6 @@ pub fn generate_key() -> Result<Key> {
     OsRng.try_fill_bytes(&mut key).map_err(Error::GenerateKey)?;
     Ok(key)
 }
-// pub struct U12;
-// impl Nonce for U12 {
-//     const NUM_BYTES: usize = 12;
-// }
-// pub struct U24;
-// impl Nonce for U24 {
-//     const NUM_BYTES: usize = 24;
-// }
-
-// pub trait Nonce {
-//     const NUM_BYTES: usize;
-// }
 
 pub fn encrypt(
     buffer: &mut [u8],

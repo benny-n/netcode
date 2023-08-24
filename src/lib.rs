@@ -1,7 +1,6 @@
 mod bytes;
 mod consts;
 mod crypto;
-mod error;
 mod free_list;
 mod packet;
 mod replay;
@@ -12,5 +11,6 @@ mod transceiver;
 mod simulator;
 
 pub mod client;
+pub mod error;
 pub mod server;
 pub mod token;

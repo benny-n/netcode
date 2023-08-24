@@ -62,7 +62,7 @@ fn main() {
     });
 
     let mut client = Client::new(&buf).unwrap();
-    client.connect().unwrap();
+    client.connect();
 
     let (tx, rx) = mpsc::channel::<String>();
     let client_thread = thread::spawn(move || {
