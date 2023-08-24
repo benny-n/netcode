@@ -74,12 +74,12 @@ impl Transceiver for NetworkSimulator {
         SocketAddr::from((Ipv4Addr::LOCALHOST, self.port))
     }
 
-    fn recv(&self, buf: &mut [u8]) -> Result<(usize, Option<SocketAddr>), Self::Error> {
+    fn recv(&self, buf: &mut [u8]) -> Result<Option<(usize, SocketAddr)>, Self::Error> {
         // routing table -> given an addr of self, look through the table for the receiving endpoint
         // if no entry is found, return early
         let table = self.routing_table.borrow();
         let Some(rx) = table.get(&self.port).map(|c| &c.rx) else {
-            return Ok((0, None));
+            return Ok(None);
         };
         if let Ok(entry) = rx.try_recv() {
             if entry.to != self.addr() {
@@ -90,9 +90,9 @@ impl Transceiver for NetworkSimulator {
             }
             let len = entry.packet.len();
             buf[..len].copy_from_slice(&entry.packet[..len]);
-            return Ok((len, Some(entry.from)));
+            return Ok(Some((len, entry.from)));
         }
-        Ok((0, None))
+        Ok(None)
     }
     fn send(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Self::Error> {
         // routing table -> given an addr, look through the table for the sending endpoint
@@ -193,12 +193,11 @@ mod tests {
 
             server.update(time).unwrap();
             let mut buf = [0; 1175];
-            let size = server.recv(&mut buf).unwrap();
-            if size > 0 {
+            if let Ok(Some((size, client_idx))) = server.recv(&mut buf) {
                 payload = buf[..size].to_vec();
                 payload.push(payload.last().unwrap() + 1);
+                server.send(&payload, client_idx).unwrap();
             }
-            server.send(&payload, 0).unwrap();
 
             if payload.contains(&(b'z')) {
                 break;

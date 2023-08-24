@@ -33,8 +33,7 @@ fn main() {
         let now = time_now_secs_f64();
         server.update(now).unwrap();
         let mut packet = [0; 1175];
-        let received = server.recv(&mut packet).unwrap();
-        if received > 0 {
+        if let Ok(Some((received, _))) = server.recv(&mut packet) {
             println!("{}", std::str::from_utf8(&packet[..received]).unwrap());
             break;
         }

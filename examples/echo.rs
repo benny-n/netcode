@@ -50,14 +50,13 @@ fn main() {
             server.update(now).unwrap();
 
             let mut packet = [0; 1175];
-            let received = server.recv(&mut packet).unwrap();
-            if received > 0 {
+            if let Ok(Some((received, client_idx))) = server.recv(&mut packet) {
                 println!(
                     "server received: {}",
                     std::str::from_utf8(&packet[..received]).unwrap()
                 );
                 // echoing back
-                server.send(&packet[..received], 0).unwrap();
+                server.send(&packet[..received], client_idx).unwrap();
             }
         }
     });

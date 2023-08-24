@@ -707,16 +707,15 @@ impl<T: Transceiver, S> Server<T, S> {
         self.send_keep_alive_packets()?;
         Ok(())
     }
-    pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+    pub fn recv(&mut self, buf: &mut [u8]) -> Result<Option<(usize, ClientIndex)>> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let (size, addr) = self.transceiver.recv(buf).map_err(|e| e.into())?;
-        let Some(addr) = addr else {
+        let Some((size, addr)) = self.transceiver.recv(buf).map_err(|e| e.into())? else {
             // No packet received
-            return Ok(0);
+            return Ok(None);
         };
         if size <= 1 {
             // Too small to be a packet
-            return Ok(0);
+            return Ok(None);
         }
         let (key, replay_protection) = match self.conn_cache.addr_to_idx.get(&addr) {
             // Regardless of whether an entry in the connection cache exists for the client or not,
@@ -732,7 +731,7 @@ impl<T: Transceiver, S> Server<T, S> {
                 log::debug!(
                     "server ignored non-connection-request packet from unknown address {addr}"
                 );
-                return Ok(0);
+                return Ok(None);
             }
         };
         let packet = match Packet::read(
@@ -746,11 +745,11 @@ impl<T: Transceiver, S> Server<T, S> {
             Ok(packet) => packet,
             Err(NetcodeError::Crypto(_)) => {
                 log::debug!("server ignored packet because it failed to decrypt");
-                return Ok(0);
+                return Ok(None);
             }
             Err(e) => {
                 log::error!("server ignored packet: {e}");
-                return Ok(0);
+                return Ok(None);
             }
         };
         let size = if let Packet::Payload(ref packet) = packet {
@@ -759,7 +758,10 @@ impl<T: Transceiver, S> Server<T, S> {
             0
         };
         self.process_packet(addr, packet)?;
-        Ok(size)
+        Ok(self
+            .conn_cache
+            .get_client_idx(addr)
+            .and_then(|idx| (size > 0).then_some((size, idx))))
     }
     pub fn send(&mut self, buf: &[u8], client_idx: ClientIndex) -> Result<()> {
         if buf.len() > MAX_PAYLOAD_SIZE {

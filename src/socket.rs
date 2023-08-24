@@ -44,10 +44,11 @@ impl Transceiver for NetcodeSocket {
         self.0.local_addr().expect("address should be bound")
     }
 
-    fn recv(&self, buf: &mut [u8]) -> Result<(usize, Option<SocketAddr>)> {
+    fn recv(&self, buf: &mut [u8]) -> Result<Option<(usize, SocketAddr)>> {
         match self.0.recv_from(buf) {
-            Ok((len, addr)) => Ok((len, Some(addr))),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok((0, None)),
+            Ok((len, addr)) if len > 0 => Ok(Some((len, addr))),
+            Ok(_) => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
             Err(e) => Err(Error::from(e)),
         }
     }

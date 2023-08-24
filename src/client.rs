@@ -435,8 +435,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
     // TODO: document
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let (size, addr) = self.transceiver.recv(buf).map_err(|e| e.into())?;
-        let Some(addr) = addr else {
+        let Some((size, addr)) = self.transceiver.recv(buf).map_err(|e| e.into())? else {
             // No packet received
             return Ok(0);
         };
