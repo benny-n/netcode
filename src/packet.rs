@@ -76,7 +76,7 @@ pub struct RequestPacket {
 }
 
 impl RequestPacket {
-    pub(crate) fn create(
+    pub fn create(
         protocol_id: u64,
         expire_timestamp: u64,
         token_nonce: u64,
@@ -90,7 +90,7 @@ impl RequestPacket {
             token_data,
         })
     }
-    pub(crate) fn validate(&self, protocol_id: u64, current_timestamp: u64) -> Result<(), Error> {
+    pub fn validate(&self, protocol_id: u64, current_timestamp: u64) -> Result<(), Error> {
         if &self.version_info != NETCODE_VERSION {
             return Err(Error::BadVersion);
         }
@@ -106,7 +106,7 @@ impl RequestPacket {
         Ok(())
     }
 
-    pub(crate) fn decrypt_token_data(&mut self, private_key: Key) -> Result<(), NetcodeError> {
+    pub fn decrypt_token_data(&mut self, private_key: Key) -> Result<(), NetcodeError> {
         let decrypted = ConnectTokenPrivate::decrypt(
             &mut self.token_data,
             self.protocol_id,
@@ -150,7 +150,7 @@ impl Bytes for RequestPacket {
 
 pub struct DeniedPacket {}
 impl DeniedPacket {
-    pub(crate) fn create() -> Packet<'static> {
+    pub fn create() -> Packet<'static> {
         Packet::Denied(DeniedPacket {})
     }
 }
@@ -169,10 +169,7 @@ pub struct ChallengePacket {
     pub token: [u8; ChallengeToken::SIZE],
 }
 impl ChallengePacket {
-    pub(crate) fn create(
-        sequence: u64,
-        token_bytes: [u8; ChallengeToken::SIZE],
-    ) -> Packet<'static> {
+    pub fn create(sequence: u64, token_bytes: [u8; ChallengeToken::SIZE]) -> Packet<'static> {
         Packet::Challenge(ChallengePacket {
             sequence,
             token: token_bytes,
@@ -200,10 +197,7 @@ pub struct ResponsePacket {
     pub token: [u8; ChallengeToken::SIZE],
 }
 impl ResponsePacket {
-    pub(crate) fn create(
-        sequence: u64,
-        token_bytes: [u8; ChallengeToken::SIZE],
-    ) -> Packet<'static> {
+    pub fn create(sequence: u64, token_bytes: [u8; ChallengeToken::SIZE]) -> Packet<'static> {
         Packet::Response(ResponsePacket {
             sequence,
             token: token_bytes,
@@ -230,7 +224,7 @@ pub struct KeepAlivePacket {
     pub max_clients: i32,
 }
 impl KeepAlivePacket {
-    pub(crate) fn create(client_index: i32, max_clients: i32) -> Packet<'static> {
+    pub fn create(client_index: i32, max_clients: i32) -> Packet<'static> {
         Packet::KeepAlive(KeepAlivePacket {
             client_index,
             max_clients,
@@ -258,14 +252,14 @@ pub struct PayloadPacket<'p> {
     pub buf: &'p [u8],
 }
 impl PayloadPacket<'_> {
-    pub(crate) fn create(buf: &[u8]) -> Packet {
+    pub fn create(buf: &[u8]) -> Packet {
         Packet::Payload(PayloadPacket { buf })
     }
 }
 
 pub struct DisconnectPacket {}
 impl DisconnectPacket {
-    pub(crate) fn create() -> Packet<'static> {
+    pub fn create() -> Packet<'static> {
         Packet::Disconnect(Self {})
     }
 }
@@ -308,13 +302,13 @@ impl std::fmt::Display for Packet<'_> {
 pub type PacketKind = u8;
 
 impl<'p> Packet<'p> {
-    pub(crate) const REQUEST: PacketKind = 0;
-    pub(crate) const DENIED: PacketKind = 1;
-    pub(crate) const CHALLENGE: PacketKind = 2;
-    pub(crate) const RESPONSE: PacketKind = 3;
-    pub(crate) const KEEP_ALIVE: PacketKind = 4;
-    pub(crate) const PAYLOAD: PacketKind = 5;
-    pub(crate) const DISCONNECT: PacketKind = 6;
+    pub const REQUEST: PacketKind = 0;
+    pub const DENIED: PacketKind = 1;
+    pub const CHALLENGE: PacketKind = 2;
+    pub const RESPONSE: PacketKind = 3;
+    pub const KEEP_ALIVE: PacketKind = 4;
+    pub const PAYLOAD: PacketKind = 5;
+    pub const DISCONNECT: PacketKind = 6;
     fn kind(&self) -> PacketKind {
         match self {
             Packet::Request(_) => Packet::REQUEST,
@@ -329,10 +323,24 @@ impl<'p> Packet<'p> {
     fn set_prefix(&self, sequence: u64) -> u8 {
         sequence_len(sequence) << 4 | self.kind()
     }
-    pub(crate) fn get_prefix(first_byte: u8) -> (usize, PacketKind) {
+    fn aead(
+        protocol_id: u64,
+        prefix: u8,
+    ) -> Result<[u8; NETCODE_VERSION.len() + size_of::<u64>() + size_of::<u8>()], NetcodeError>
+    {
+        // Encrypt the per-packet packet written with the prefix byte, protocol id and version as the associated data.
+        // This must match to decrypt.
+        let mut aead = [0u8; NETCODE_VERSION.len() + size_of::<u64>() + size_of::<u8>()];
+        let mut cursor = std::io::Cursor::new(&mut aead[..]);
+        cursor.write_all(NETCODE_VERSION).unwrap();
+        cursor.write_u64::<LittleEndian>(protocol_id).unwrap();
+        cursor.write_u8(prefix).unwrap();
+        Ok(aead)
+    }
+    pub fn get_prefix(first_byte: u8) -> (usize, PacketKind) {
         ((first_byte >> 4) as usize, first_byte & 0xF)
     }
-    pub(crate) fn is_connection_request(first_byte: u8) -> bool {
+    pub fn is_connection_request(first_byte: u8) -> bool {
         first_byte == Packet::REQUEST
     }
     pub fn write(
@@ -366,17 +374,9 @@ impl<'p> Packet<'p> {
         }
         let encryption_end = cursor.position() as usize + MAC_SIZE;
 
-        // Encrypt the per-packet packet written with the prefix byte, protocol id and version as the associated data.
-        // This must match to decrypt.
-        let mut aead = [0u8; NETCODE_VERSION.len() + size_of::<u64>() + size_of::<u8>()];
-        let mut aead_cursor = std::io::Cursor::new(&mut aead[..]);
-        aead_cursor.write_all(NETCODE_VERSION)?;
-        aead_cursor.write_u64::<LittleEndian>(protocol_id)?;
-        aead_cursor.write_u8(self.set_prefix(sequence))?;
-
         crypto::encrypt(
             &mut out[encryption_start..encryption_end],
-            Some(&aead),
+            Some(&Packet::aead(protocol_id, self.set_prefix(sequence))?),
             sequence,
             packet_key,
         )?;
@@ -424,17 +424,11 @@ impl<'p> Packet<'p> {
             }
         }
 
-        let mut aead = [0u8; NETCODE_VERSION.len() + size_of::<u64>() + size_of::<u8>()];
-        let mut aead_cursor = std::io::Cursor::new(&mut aead[..]);
-        aead_cursor.write_all(NETCODE_VERSION)?;
-        aead_cursor.write_u64::<LittleEndian>(protocol_id)?;
-        aead_cursor.write_u8(prefix_byte)?;
-
         let decryption_start = cursor.position() as usize;
         let decryption_end = buf_len;
         crypto::decrypt(
             &mut cursor.get_mut()[decryption_start..decryption_end],
-            Some(&aead),
+            Some(&Packet::aead(protocol_id, prefix_byte)?),
             sequence,
             &key,
         )?;

@@ -3,8 +3,10 @@ use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 
 use socket2::{Domain, Protocol, Socket, Type};
 
-use crate::consts::{SERVER_SOCKET_RECV_BUF_SIZE, SERVER_SOCKET_SEND_BUF_SIZE};
 use crate::transceiver::Transceiver;
+
+const SERVER_SOCKET_RECV_BUF_SIZE: usize = 4 * 1024 * 1024;
+const SERVER_SOCKET_SEND_BUF_SIZE: usize = 4 * 1024 * 1024;
 
 #[derive(thiserror::Error, Debug)]
 #[error("failed to create and bind udp socket: {0}")]

@@ -177,7 +177,7 @@ mod tests {
             time += delta;
         }
         assert_eq!(server.iter_clients().count(), 1);
-        assert_eq!(server.iter_clients().last().unwrap(), 0);
+        assert_eq!(*server.iter_clients().last().unwrap(), 0);
         assert!(client.is_connected());
 
         let mut payload = vec![b'a'];
@@ -241,7 +241,7 @@ mod tests {
             time += delta;
         }
         assert_eq!(server.iter_clients().count(), 1);
-        assert_eq!(server.iter_clients().last().unwrap(), 0);
+        assert_eq!(*server.iter_clients().last().unwrap(), 0);
         assert!(client.is_connected());
 
         // now don't update server for a while and ensure client times out
@@ -293,7 +293,7 @@ mod tests {
             iterations_done = i;
         }
         assert_eq!(server.iter_clients().count(), 1);
-        assert_eq!(server.iter_clients().last().unwrap(), 0);
+        assert_eq!(*server.iter_clients().last().unwrap(), 0);
         assert!(client.is_connected());
         assert!(iterations_done < num_iterations);
     }

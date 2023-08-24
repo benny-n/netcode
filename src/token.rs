@@ -3,8 +3,8 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use crate::{
     bytes::Bytes,
     consts::{
-        DEFAULT_CONNECTION_TIMEOUT_SECONDS, DEFAULT_TOKEN_EXPIRE_SECONDS, NETCODE_VERSION,
-        PRIVATE_KEY_SIZE, USER_DATA_SIZE,
+        DEFAULT_CONNECTION_TIMEOUT_SECONDS, DEFAULT_TOKEN_EXPIRE_SECONDS, MAX_SERVERS_PER_CONNECT,
+        NETCODE_VERSION, PRIVATE_KEY_SIZE, USER_DATA_SIZE,
     },
     crypto::{self, Key},
     error::NetcodeError,
@@ -17,17 +17,15 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
 };
 
-pub const MAX_SERVERS_PER_CONNECT: usize = 32;
-
 #[derive(Debug, Clone, Copy)]
-pub struct AddressList {
+pub(crate) struct AddressList {
     addrs: FreeList<SocketAddr, MAX_SERVERS_PER_CONNECT>,
 }
 
 impl AddressList {
     const IPV4: u8 = 1;
     const IPV6: u8 = 2;
-    pub fn new(addrs: impl ToSocketAddrs) -> Result<Self, NetcodeError> {
+    pub(crate) fn new(addrs: impl ToSocketAddrs) -> Result<Self, NetcodeError> {
         let mut server_addresses = FreeList::new();
 
         for (i, addr) in addrs.to_socket_addrs()?.enumerate() {
@@ -42,13 +40,10 @@ impl AddressList {
             addrs: server_addresses,
         })
     }
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.addrs.len()
     }
-    pub fn is_empty(&self) -> bool {
-        self.addrs.len() == 0
-    }
-    pub fn iter(&self) -> FreeListIter<SocketAddr, MAX_SERVERS_PER_CONNECT> {
+    pub(crate) fn iter(&self) -> FreeListIter<SocketAddr, MAX_SERVERS_PER_CONNECT> {
         FreeListIter {
             free_list: &self.addrs,
             index: 0,

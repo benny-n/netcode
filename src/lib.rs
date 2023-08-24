@@ -9,7 +9,7 @@ mod socket;
 mod transceiver;
 
 #[cfg(test)]
-pub mod simulator;
+mod simulator;
 
 pub mod client;
 pub mod server;

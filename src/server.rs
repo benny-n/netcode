@@ -16,9 +16,6 @@ use crate::socket::NetcodeSocket;
 use crate::token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate};
 use crate::transceiver::Transceiver;
 
-// Re-export `AddressList`
-pub use crate::token::AddressList;
-
 type Result<T> = std::result::Result<T, NetcodeError>;
 
 #[derive(Clone, Copy)]
@@ -98,8 +95,29 @@ impl Connection {
     }
 }
 
+/// The client id from a connect token, must be unique for each client.
+///
+/// Note that this is not the same as the [`ClientIndex`](ClientIndex), which is used by the server to identify clients.
 pub type ClientId = u64;
-pub type ClientIndex = usize;
+
+/// A thin wrapper around `usize` used by the server to identify clients.
+///
+/// This is used instead of `usize` to make it harder to accidentally use a client id as a client index, or mix between other `usize` values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ClientIndex(usize);
+
+impl std::ops::Deref for ClientIndex {
+    type Target = usize;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ClientIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 struct ConnectionCache {
     // this somewhat mimics the original C implementation, but it's not exactly the same since `Connection` stores encryption mappings as well
@@ -138,7 +156,7 @@ impl ConnectionCache {
         if let Some(existing) = self
             .addr_to_idx
             .get(&addr)
-            .and_then(|addr| self.clients.get_mut(*addr))
+            .and_then(|&idx| self.clients.get_mut(idx.0))
         {
             existing.client_id = client_id;
             existing.timeout = timeout;
@@ -162,14 +180,14 @@ impl ConnectionCache {
             receive_key,
             sequence: 0,
         };
-        let client_idx = self.clients.insert(conn);
+        let client_idx = ClientIndex(self.clients.insert(conn));
         self.replay_protection
             .insert(client_idx, ReplayProtection::new());
         self.addr_to_idx.insert(addr, client_idx);
         self.id_to_idx.insert(client_id, client_idx);
     }
     fn remove(&mut self, client_idx: ClientIndex) {
-        let Some(conn) = self.clients.get_mut(client_idx) else {
+        let Some(conn) = self.clients.get_mut(*client_idx) else {
             return;
         };
         if !conn.is_connected() {
@@ -178,15 +196,15 @@ impl ConnectionCache {
         self.addr_to_idx.remove(&conn.addr);
         self.id_to_idx.remove(&conn.client_id);
         self.replay_protection.remove(&client_idx);
-        self.clients.remove(client_idx);
+        self.clients.remove(*client_idx);
     }
     fn get_client_idx(&self, addr: SocketAddr) -> Option<ClientIndex> {
         self.addr_to_idx.get(&addr).copied()
     }
-    fn find_by_id(&mut self, client_id: ClientId) -> Option<(usize, &mut Connection)> {
+    fn find_by_id(&mut self, client_id: ClientId) -> Option<(ClientIndex, &mut Connection)> {
         self.id_to_idx.get(&client_id).map(|&idx| {
-            self.clients[idx].last_access_time = self.time;
-            (idx, &mut self.clients[idx])
+            self.clients[idx.0].last_access_time = self.time;
+            (idx, &mut self.clients[idx.0])
         })
     }
     fn is_connection_expired(conn: &Connection, time: f64) -> bool {
@@ -200,7 +218,7 @@ impl ConnectionCache {
                 continue;
             };
             if Self::is_connection_expired(conn, time) {
-                self.remove(idx);
+                self.remove(ClientIndex(idx));
             }
         }
     }
@@ -226,7 +244,7 @@ type Callback<Ctx> = Box<dyn FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync 
 ///     if let Some(ctx) = ctx {
 ///         let mut counter = ctx.lock().unwrap();
 ///         *counter += 1;
-///         println!("client {} connected, counter: {}", idx, counter);
+///         println!("client {} connected, counter: {idx}", counter);
 ///     }
 /// });
 /// let server = Server::with_config(addr, protocol_id, Some(private_key), cfg).unwrap();
@@ -416,7 +434,7 @@ impl<T: Transceiver, S> Server<T, S> {
         let Some(idx) = client_idx else {
             return Ok(());
         };
-        let Some(conn) = self.conn_cache.clients.get_mut(idx) else {
+        let Some(conn) = self.conn_cache.clients.get_mut(idx.0) else {
             return Ok(());
         };
         conn.last_receive_time = self.time;
@@ -432,7 +450,7 @@ impl<T: Transceiver, S> Server<T, S> {
             "server received {} from {}",
             packet.to_string(),
             client_idx
-                .map(|idx| format!("client {}", idx))
+                .map(|idx| format!("client {idx}"))
                 .unwrap_or_else(|| addr.to_string())
         );
         match packet {
@@ -441,7 +459,7 @@ impl<T: Transceiver, S> Server<T, S> {
             Packet::KeepAlive(_) | Packet::Payload(_) => self.touch_client(client_idx),
             Packet::Disconnect(_) => {
                 if let Some(idx) = client_idx {
-                    log::debug!("server disconnected client {}", idx);
+                    log::debug!("server disconnected client {idx}");
                     self.conn_cache.remove(idx);
                 }
                 Ok(())
@@ -460,7 +478,7 @@ impl<T: Transceiver, S> Server<T, S> {
     }
     fn send_to_client(&mut self, packet: Packet, idx: ClientIndex) -> Result<()> {
         let mut buf = [0u8; MAX_PKT_BUF_SIZE];
-        let conn = &mut self.conn_cache.clients[idx];
+        let conn = &mut self.conn_cache.clients[idx.0];
         let size = packet.write(&mut buf, conn.sequence, &conn.send_key, self.protocol_id)?;
         self.transceiver
             .send(&buf[..size], conn.addr)
@@ -470,8 +488,8 @@ impl<T: Transceiver, S> Server<T, S> {
         conn.sequence += 1;
         Ok(())
     }
-    pub fn disconnect_client(&mut self, client_idx: usize) -> Result<()> {
-        log::debug!("server disconnecting client {}", client_idx);
+    pub fn disconnect_client(&mut self, client_idx: ClientIndex) -> Result<()> {
+        log::debug!("server disconnecting client {}", *client_idx);
         for _ in 0..self.cfg.num_disconnect_packets {
             self.send_to_client(DisconnectPacket::create(), client_idx)?;
         }
@@ -486,7 +504,7 @@ impl<T: Transceiver, S> Server<T, S> {
                 continue;
             };
             if conn.is_connected() {
-                self.disconnect_client(idx)?;
+                self.disconnect_client(ClientIndex(idx))?;
             }
         }
         Ok(())
@@ -515,7 +533,7 @@ impl<T: Transceiver, S> Server<T, S> {
             .conn_cache
             .addr_to_idx
             .get(&from_addr)
-            .and_then(|&idx| self.conn_cache.clients.get(idx))
+            .and_then(|&idx| self.conn_cache.clients.get(idx.0))
             .is_some_and(|&conn| conn.is_connected())
         {
             log::debug!("server ignored connection request. a client with this address is already connected");
@@ -600,26 +618,26 @@ impl<T: Transceiver, S> Server<T, S> {
             self.send_to_addr(
                 DeniedPacket::create(),
                 from_addr,
-                self.conn_cache.clients[idx].send_key,
+                self.conn_cache.clients[idx.0].send_key,
             )?;
             return Ok(());
         };
-        if self.conn_cache.clients[idx].is_connected() {
+        if self.conn_cache.clients[idx.0].is_connected() {
             log::debug!("server ignored connection response. client is already connected");
             return Ok(());
         };
-        self.conn_cache.clients[idx].connect();
-        self.conn_cache.clients[idx].expire_time = -1.0; // TODO: check if this is correct
-        self.conn_cache.clients[idx].sequence = 0;
-        self.conn_cache.clients[idx].last_send_time = self.time;
-        self.conn_cache.clients[idx].last_receive_time = self.time;
+        self.conn_cache.clients[idx.0].connect();
+        self.conn_cache.clients[idx.0].expire_time = -1.0; // TODO: check if this is correct
+        self.conn_cache.clients[idx.0].sequence = 0;
+        self.conn_cache.clients[idx.0].last_send_time = self.time;
+        self.conn_cache.clients[idx.0].last_receive_time = self.time;
         log::debug!(
             "server accepted client {} with id {}",
             idx,
             challenge_token.client_id
         );
         self.send_to_client(
-            KeepAlivePacket::create(idx as i32, self.max_clients as i32),
+            KeepAlivePacket::create(idx.0 as i32, self.max_clients as i32),
             idx,
         )?;
         self.on_connect(idx);
@@ -630,6 +648,7 @@ impl<T: Transceiver, S> Server<T, S> {
             let Some(client) = self.conn_cache.clients.get_mut(idx) else {
                 continue;
             };
+            let idx = ClientIndex(idx);
             if !client.is_connected() {
                 continue;
             }
@@ -655,7 +674,7 @@ impl<T: Transceiver, S> Server<T, S> {
                 log::trace!("server sent connection keep alive packet to client {idx}");
                 self.send_to_client(
                     KeepAlivePacket::create(idx as i32, self.max_clients as i32),
-                    idx,
+                    ClientIndex(idx),
                 )?;
             }
         }
@@ -723,7 +742,7 @@ impl<T: Transceiver, S> Server<T, S> {
             _ if Packet::is_connection_request(buf[0]) => (self.private_key, None),
             Some(client_idx) => (
                 // If the packet is not a connection request, use the receive key to decrypt it.
-                self.conn_cache.clients[*client_idx].receive_key,
+                self.conn_cache.clients[**client_idx].receive_key,
                 self.conn_cache.replay_protection.get_mut(client_idx),
             ),
             None => {
@@ -767,20 +786,21 @@ impl<T: Transceiver, S> Server<T, S> {
         if buf.len() > MAX_PAYLOAD_SIZE {
             return Err(NetcodeError::PacketSizeExceeded(buf.len()));
         }
-        let Some(conn) = self.conn_cache.clients.get_mut(client_idx) else {
+        let Some(conn) = self.conn_cache.clients.get_mut(*client_idx) else {
             return Err(NetcodeError::ClientNotFound);
         };
         if !conn.connected {
             // client is not yet connected, but this shouldn't be an error as the client may be sending a connection request
             log::debug!(
-                "server ignored send to client {client_idx} because it is not yet connected"
+                "server ignored send to client {} because it is not yet connected",
+                *client_idx
             );
             return Ok(());
         }
         if !conn.confirmed {
             // send a keep alive packet to the client to confirm the connection
             self.send_to_client(
-                KeepAlivePacket::create(client_idx as i32, self.max_clients as i32),
+                KeepAlivePacket::create(*client_idx as i32, self.max_clients as i32),
                 client_idx,
             )?;
         }
@@ -793,7 +813,13 @@ impl<T: Transceiver, S> Server<T, S> {
             .iter()
             .filter(|c| c.is_connected())
             .enumerate()
-            .map(|(idx, _)| idx)
+            .map(|(idx, _)| ClientIndex(idx))
+    }
+    pub fn client_id(&self, client_idx: ClientIndex) -> Option<ClientId> {
+        self.conn_cache
+            .clients
+            .get(*client_idx)
+            .map(|c| c.client_id)
     }
 }
 
