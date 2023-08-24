@@ -104,12 +104,18 @@ pub type ClientId = u64;
 ///
 /// This is used instead of `usize` to make it harder to accidentally use a client id as a client index, or mix between other `usize` values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ClientIndex(usize);
+pub struct ClientIndex(pub(crate) usize);
 
-impl std::ops::Deref for ClientIndex {
-    type Target = usize;
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl<T> std::ops::Index<ClientIndex> for [T] {
+    type Output = T;
+    fn index(&self, index: ClientIndex) -> &Self::Output {
+        &self[index.0]
+    }
+}
+
+impl<T> std::ops::IndexMut<ClientIndex> for [T] {
+    fn index_mut(&mut self, index: ClientIndex) -> &mut Self::Output {
+        &mut self[index.0]
     }
 }
 
@@ -187,7 +193,7 @@ impl ConnectionCache {
         self.id_to_idx.insert(client_id, client_idx);
     }
     fn remove(&mut self, client_idx: ClientIndex) {
-        let Some(conn) = self.clients.get_mut(*client_idx) else {
+        let Some(conn) = self.clients.get_mut(client_idx.0) else {
             return;
         };
         if !conn.is_connected() {
@@ -196,7 +202,7 @@ impl ConnectionCache {
         self.addr_to_idx.remove(&conn.addr);
         self.id_to_idx.remove(&conn.client_id);
         self.replay_protection.remove(&client_idx);
-        self.clients.remove(*client_idx);
+        self.clients.remove(client_idx.0);
     }
     fn get_client_idx(&self, addr: SocketAddr) -> Option<ClientIndex> {
         self.addr_to_idx.get(&addr).copied()
@@ -342,7 +348,7 @@ impl Server<NetcodeSocket> {
     ///
     /// let private_key = [42u8; 32]; // TODO: generate a real private key
     /// let protocol_id = 0x123456789ABCDEF0;
-    /// let addr = "127.0.0.1:40000";
+    /// let addr = "127.0.0.1:41234";
     /// let server = Server::new(addr, protocol_id, Some(private_key)).unwrap();
     /// ```
     pub fn new(
@@ -489,7 +495,7 @@ impl<T: Transceiver, S> Server<T, S> {
         Ok(())
     }
     pub fn disconnect_client(&mut self, client_idx: ClientIndex) -> Result<()> {
-        log::debug!("server disconnecting client {}", *client_idx);
+        log::debug!("server disconnecting client {client_idx}");
         for _ in 0..self.cfg.num_disconnect_packets {
             self.send_to_client(DisconnectPacket::create(), client_idx)?;
         }
@@ -742,7 +748,7 @@ impl<T: Transceiver, S> Server<T, S> {
             _ if Packet::is_connection_request(buf[0]) => (self.private_key, None),
             Some(client_idx) => (
                 // If the packet is not a connection request, use the receive key to decrypt it.
-                self.conn_cache.clients[**client_idx].receive_key,
+                self.conn_cache.clients[client_idx.0].receive_key,
                 self.conn_cache.replay_protection.get_mut(client_idx),
             ),
             None => {
@@ -786,21 +792,20 @@ impl<T: Transceiver, S> Server<T, S> {
         if buf.len() > MAX_PAYLOAD_SIZE {
             return Err(NetcodeError::PacketSizeExceeded(buf.len()));
         }
-        let Some(conn) = self.conn_cache.clients.get_mut(*client_idx) else {
+        let Some(conn) = self.conn_cache.clients.get_mut(client_idx.0) else {
             return Err(NetcodeError::ClientNotFound);
         };
         if !conn.connected {
             // client is not yet connected, but this shouldn't be an error as the client may be sending a connection request
             log::debug!(
-                "server ignored send to client {} because it is not yet connected",
-                *client_idx
+                "server ignored send to client {client_idx} because it is not yet connected",
             );
             return Ok(());
         }
         if !conn.confirmed {
             // send a keep alive packet to the client to confirm the connection
             self.send_to_client(
-                KeepAlivePacket::create(*client_idx as i32, self.max_clients as i32),
+                KeepAlivePacket::create(client_idx.0 as i32, self.max_clients as i32),
                 client_idx,
             )?;
         }
@@ -818,7 +823,7 @@ impl<T: Transceiver, S> Server<T, S> {
     pub fn client_id(&self, client_idx: ClientIndex) -> Option<ClientId> {
         self.conn_cache
             .clients
-            .get(*client_idx)
+            .get(client_idx.0)
             .map(|c| c.client_id)
     }
 }
@@ -828,13 +833,13 @@ pub mod tests {
     use super::*;
     use crate::simulator::NetworkSimulator;
     impl Server<NetworkSimulator> {
-        pub fn with_simulator(sim: NetworkSimulator) -> Result<Self> {
+        pub fn with_simulator(sim: NetworkSimulator, private_key: Option<Key>) -> Result<Self> {
             let time = 0.0;
             log::info!("server started on {}", sim.addr());
             let server = Server {
                 transceiver: sim,
                 time,
-                private_key: crypto::generate_key()?,
+                private_key: private_key.unwrap_or(crypto::generate_key()?),
                 max_clients: MAX_CLIENTS,
                 protocol_id: 0,
                 sequence: 1 << 63,

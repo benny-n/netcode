@@ -489,7 +489,9 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         let is_connection_timed_out = self.token.timeout_seconds.is_positive()
             && (self.last_receive_time + (self.token.timeout_seconds as f64) < self.time);
         let new_state = match self.state {
-            ClientState::Disconnected | ClientState::Connected if is_token_expired => {
+            ClientState::SendingConnectionRequest | ClientState::SendingChallengeResponse
+                if is_token_expired =>
+            {
                 log::info!("client connect failed. connect token expired");
                 ClientState::ConnectTokenExpired
             }
@@ -498,17 +500,23 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
                     "client should disconnect -> {:?}",
                     self.should_disconnect_state
                 );
-                self.connect_to_next_server()?;
+                if self.connect_to_next_server().is_ok() {
+                    return Ok(());
+                };
                 self.should_disconnect_state
             }
             ClientState::SendingConnectionRequest if is_connection_timed_out => {
                 log::info!("client connect failed. connection request timed out");
-                self.connect_to_next_server()?;
+                if self.connect_to_next_server().is_ok() {
+                    return Ok(());
+                };
                 ClientState::ConnectionRequestTimedOut
             }
             ClientState::SendingChallengeResponse if is_connection_timed_out => {
                 log::info!("client connect failed. connection response timed out");
-                self.connect_to_next_server()?;
+                if self.connect_to_next_server().is_ok() {
+                    return Ok(());
+                };
                 ClientState::ChallengeResponseTimedOut
             }
             ClientState::Connected if is_connection_timed_out => {
