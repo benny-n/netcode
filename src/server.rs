@@ -135,6 +135,19 @@ impl ConnectionCache {
         send_key: Key,
         receive_key: Key,
     ) {
+        if let Some(existing) = self
+            .addr_to_idx
+            .get(&addr)
+            .and_then(|addr| self.clients.get_mut(*addr))
+        {
+            existing.client_id = client_id;
+            existing.timeout = timeout;
+            existing.expire_time = expire_time;
+            existing.send_key = send_key;
+            existing.receive_key = receive_key;
+            existing.last_access_time = self.time;
+            return;
+        }
         let conn = Connection {
             confirmed: false,
             connected: false,
@@ -772,17 +785,24 @@ impl<T: Transceiver, S> Server<T, S> {
         let packet = PayloadPacket::create(buf);
         self.send_to_client(packet, client_idx)
     }
+    pub fn iter_clients(&self) -> impl Iterator<Item = ClientIndex> + '_ {
+        self.conn_cache
+            .clients
+            .iter()
+            .filter(|c| c.is_connected())
+            .enumerate()
+            .map(|(idx, _)| idx)
+    }
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
     use crate::simulator::NetworkSimulator;
-    use std::{cell::RefCell, rc::Rc};
-    impl Server<Rc<RefCell<NetworkSimulator>>> {
-        pub fn with_simulator(sim: Rc<RefCell<NetworkSimulator>>) -> Result<Self> {
+    impl Server<NetworkSimulator> {
+        pub fn with_simulator(sim: NetworkSimulator) -> Result<Self> {
             let time = 0.0;
-            log::info!("server started on {}", sim.borrow().addr());
+            log::info!("server started on {}", sim.addr());
             let server = Server {
                 transceiver: sim,
                 time,

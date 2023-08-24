@@ -529,13 +529,8 @@ mod tests {
     use crate::consts::NETCODE_VERSION;
     use crate::simulator::NetworkSimulator;
     use std::io::Write;
-    use std::{cell::RefCell, rc::Rc};
-
-    impl Client<Rc<RefCell<NetworkSimulator>>> {
-        pub fn with_simulator(
-            token: ConnectToken,
-            sim: Rc<RefCell<NetworkSimulator>>,
-        ) -> Result<Self> {
+    impl Client<NetworkSimulator> {
+        pub fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
             Ok(Self {
                 transceiver: sim,
                 state: ClientState::Disconnected,
