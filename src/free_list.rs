@@ -44,12 +44,26 @@ impl<T: Sized, const N: usize> FreeList<T, N> {
         }
     }
 
+    pub(crate) fn replace(&mut self, index: usize, value: T) -> Option<T> {
+        self.inner.get_mut(index).and_then(|x| x.replace(value))
+    }
+
     pub(crate) fn get(&self, index: usize) -> Option<&T> {
         self.inner.get(index).and_then(Option::as_ref)
     }
 
     pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         self.inner.get_mut(index).and_then(Option::as_mut)
+    }
+
+    pub(crate) fn iter(&self) -> FreeListIter<'_, T, N>
+    where
+        T: Copy,
+    {
+        FreeListIter {
+            free_list: self,
+            index: 0,
+        }
     }
 }
 

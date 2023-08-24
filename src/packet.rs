@@ -389,6 +389,7 @@ impl<'p> Packet<'p> {
         timestamp: u64,
         key: Key,
         replay_protection: Option<&mut ReplayProtection>,
+        allowed_packets: u8,
     ) -> Result<Packet<'p>, NetcodeError> {
         let buf_len = buf.len();
         if buf_len < 1 {
@@ -399,6 +400,10 @@ impl<'p> Packet<'p> {
         }
         let mut cursor = std::io::Cursor::new(&mut buf[..]);
         let prefix_byte = cursor.read_u8()?;
+        let (sequence_len, pkt_kind) = Packet::get_prefix(prefix_byte);
+        if allowed_packets & (1 << pkt_kind) == 0 {
+            log::debug!("ignoring packet of type {}, not allowed", pkt_kind);
+        }
         if prefix_byte == Packet::REQUEST {
             // connection request packet: first byte should be 0x00
             let mut packet = RequestPacket::read_from(&mut cursor)?;
@@ -406,7 +411,6 @@ impl<'p> Packet<'p> {
             packet.decrypt_token_data(key)?;
             return Ok(Packet::Request(packet));
         }
-        let (sequence_len, pkt_kind) = Packet::get_prefix(prefix_byte);
         if buf_len < size_of::<u8>() + sequence_len + MAC_SIZE {
             // should at least have prefix byte, sequence and mac
             return Err(Error::TooSmall.into());
@@ -541,6 +545,7 @@ mod tests {
             0,
             private_key,
             Some(&mut replay_protection),
+            0xff,
         )
         .unwrap();
 
@@ -587,6 +592,7 @@ mod tests {
             0,
             packet_key,
             Some(&mut replay_protection),
+            0xff,
         )
         .unwrap();
 
@@ -616,6 +622,7 @@ mod tests {
             0,
             packet_key,
             Some(&mut replay_protection),
+            0xff,
         )
         .unwrap();
 
@@ -652,6 +659,7 @@ mod tests {
             0,
             packet_key,
             Some(&mut replay_protection),
+            0xff,
         )
         .unwrap();
 
@@ -683,6 +691,7 @@ mod tests {
             0,
             packet_key,
             Some(&mut replay_protection),
+            0xff,
         )
         .unwrap();
 
@@ -712,6 +721,7 @@ mod tests {
             0,
             packet_key,
             Some(&mut replay_protection),
+            0xff,
         )
         .unwrap();
 

@@ -257,6 +257,11 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
 }
 
 impl<T: Transceiver, Ctx> Client<T, Ctx> {
+    const ALLOWED_PACKETS: u8 = 1 << Packet::DENIED
+        | 1 << Packet::CHALLENGE
+        | 1 << Packet::KEEP_ALIVE
+        | 1 << Packet::PAYLOAD
+        | 1 << Packet::DISCONNECT;
     fn set_state(&mut self, state: ClientState) {
         log::debug!("client state changing from {:?} to {:?}", self.state, state);
         if let Some(ref mut cb) = self.cfg.on_state_change {
@@ -404,7 +409,11 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         );
         Ok(())
     }
-    /// Get the current state of the client.
+    /// Gets the local `SocketAddr` that the client is bound to.
+    pub fn addr(&self) -> SocketAddr {
+        self.transceiver.addr()
+    }
+    /// Gets the current state of the client.
     pub fn state(&self) -> ClientState {
         self.state
     }
@@ -435,13 +444,24 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             // Too small to be a packet
             return Ok(0);
         }
-        let packet = Packet::read(
+        let packet = match Packet::read(
             &mut buf[..size],
             self.token.protocol_id,
             now,
             self.token.server_to_client_key,
             Some(&mut self.replay_protection),
-        )?;
+            Self::ALLOWED_PACKETS,
+        ) {
+            Ok(packet) => packet,
+            Err(NetcodeError::Crypto(_)) => {
+                log::debug!("client ignored packet because it failed to decrypt");
+                return Ok(0);
+            }
+            Err(e) => {
+                log::error!("client ignored packet: {e}");
+                return Ok(0);
+            }
+        };
         let size = if let Packet::Payload(ref packet) = packet {
             packet.buf.len()
         } else {
@@ -505,10 +525,34 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
 
 #[cfg(test)]
 mod tests {
-    use crate::consts::NETCODE_VERSION;
-
     use super::*;
+    use crate::consts::NETCODE_VERSION;
+    use crate::simulator::NetworkSimulator;
     use std::io::Write;
+    impl Client<NetworkSimulator> {
+        pub fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
+            Ok(Self {
+                transceiver: sim,
+                state: ClientState::Disconnected,
+                time: 0.0,
+                start_time: 0.0,
+                last_send_time: f64::NEG_INFINITY,
+                last_receive_time: f64::NEG_INFINITY,
+                server_addr_idx: 0,
+                sequence: 0,
+                challenge_token_sequence: 0,
+                challenge_token_data: [0u8; ChallengeToken::SIZE],
+                client_index: 0,
+                max_clients: 0,
+                token,
+                replay_protection: ReplayProtection::new(),
+                should_disconnect: false,
+                should_disconnect_state: ClientState::Disconnected,
+                cfg: ClientConfig::default(),
+            })
+        }
+    }
+
     #[test]
     fn invalid_connect_token() {
         let mut token_bytes = [0u8; ConnectToken::SIZE];

@@ -1,88 +1,301 @@
-// use std::{collections::VecDeque, net::SocketAddr};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    io::{self, ErrorKind},
+    net::{Ipv4Addr, SocketAddr},
+    rc::Rc,
+    sync::mpsc::{self, Receiver, Sender},
+};
 
-// use crate::{
-//     consts::{MAX_CLIENTS, MAX_PKT_BUF_SIZE},
-//     transceiver::Transceiver,
-// };
+use crate::{server::Server, transceiver::Transceiver};
 
-// const NUM_PACKET_ENTRIES: usize = 256 * MAX_CLIENTS;
-// const NUM_PENDING_RECEIVE_PACKETS: usize = 64 * MAX_CLIENTS;
+#[derive(Debug, Clone)]
+pub struct PacketEntry {
+    pub from: SocketAddr,
+    pub to: SocketAddr,
+    pub delivery_time: f64,
+    pub packet: Vec<u8>,
+}
 
-// #[derive(Debug)]
-// pub(crate) struct PacketEntry {
-//     pub(crate) from: SocketAddr,
-//     pub(crate) to: SocketAddr,
-//     pub(crate) delivery_time: f64,
-//     pub(crate) packet: Vec<u8>,
-// }
+pub struct Channel {
+    pub tx: Sender<PacketEntry>,
+    pub rx: Receiver<PacketEntry>,
+}
 
-// #[derive(Default)]
-// pub(crate) struct NetworkSimulator {
-//     pub(crate) latency_ms: f32,
-//     pub(crate) jitter_ms: f32,
-//     pub(crate) packet_loss_percent: f32,
-//     pub(crate) duplicate_packet_percent: f32,
-//     pub(crate) time: f64,
-//     pub(crate) packet_entries: VecDeque<PacketEntry>,
-//     pub(crate) pending_receive_packets: Vec<PacketEntry>,
-// }
+#[derive(Clone, Copy)]
+pub struct SimulationConfig {
+    pub latency_ms: f64,
+    pub jitter_ms: f64,
+    pub packet_loss_percent: f64,
+    pub duplicate_packet_percent: f64,
+}
 
-// impl NetworkSimulator {
-//     pub fn new(
-//         lattecy_ms: f32,
-//         jitter_ms: f32,
-//         packet_loss_percent: f32,
-//         duplicate_packet_percent: f32,
-//     ) -> Self {
-//         Self {
-//             latency_ms: lattecy_ms,
-//             jitter_ms,
-//             packet_loss_percent,
-//             duplicate_packet_percent,
-//             ..Default::default()
-//         }
-//     }
-// }
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            latency_ms: 250.0,
+            jitter_ms: 250.0,
+            packet_loss_percent: 50.0,
+            duplicate_packet_percent: 50.0,
+        }
+    }
+}
 
-// fn rand_float(range: std::ops::Range<f32>) -> f32 {
-//     use chacha20poly1305::aead::{rand_core::RngCore, OsRng};
-//     let rand = OsRng.next_u32() as f32 / u32::MAX as f32;
-//     range.start + rand * (range.end - range.start)
-// }
+pub struct NetworkSimulator {
+    pub port: u16,
+    pub time: f64,
+    pub cfg: SimulationConfig,
+    pub routing_table: Rc<RefCell<HashMap<u16, Channel>>>,
+}
 
-// impl Transceiver for NetworkSimulator {
-//     type Error = std::io::Error;
+impl NetworkSimulator {
+    pub fn new(port: u16, table: Rc<RefCell<HashMap<u16, Channel>>>) -> Self {
+        let (tx, rx) = mpsc::channel::<PacketEntry>();
+        table.borrow_mut().insert(port, Channel { tx, rx });
+        Self {
+            port,
+            time: 0.0,
+            cfg: SimulationConfig::default(),
+            routing_table: table,
+        }
+    }
+}
 
-//     fn recv(
-//         &mut self,
-//         from: SocketAddr,
-//         to: SocketAddr,
-//         buf: &mut [u8],
-//     ) -> Result<(usize, Option<SocketAddr>), Self::Error> {
-//         for (idx, mut packet) in self.pending_receive_packets.iter_mut().enumerate() {
-//             if packet.to != to {
-//                 continue;
-//             }
-//             packet.from = from;
-//             self.pending_receive_packets.push(packet);
-//         }
-//         Ok((0, None))
-//     }
-//     fn send(&mut self, from: SocketAddr, to: SocketAddr, buf: &[u8]) -> Result<usize, Self::Error> {
-//         if rand_float(0f32..100.) < self.packet_loss_percent {
-//             return Ok(buf.len());
-//         }
-//         let mut delay = self.latency_ms / 1000.0;
-//         if self.jitter_ms > 0.0 {
-//             delay += rand_float(-self.jitter_ms..self.jitter_ms) / 1000.0;
-//         }
-//         let entry = PacketEntry {
-//             from,
-//             to,
-//             delivery_time: self.time + delay as f64 + rand_float(0f32..1.0) as f64,
-//             packet: buf.to_vec(),
-//         };
-//         self.packet_entries.push_back(entry);
-//         Ok(buf.len())
-//     }
-// }
+fn rand_float(range: std::ops::Range<f64>) -> f64 {
+    use chacha20poly1305::aead::{rand_core::RngCore, OsRng};
+    let rand = OsRng.next_u32() as f64 / u32::MAX as f64;
+    range.start + rand * (range.end - range.start)
+}
+
+impl Transceiver for NetworkSimulator {
+    type Error = io::Error;
+
+    fn addr(&self) -> SocketAddr {
+        SocketAddr::from((Ipv4Addr::LOCALHOST, self.port))
+    }
+
+    fn recv(&self, buf: &mut [u8]) -> Result<(usize, Option<SocketAddr>), Self::Error> {
+        // routing table -> given an addr of self, look through the table for the receiving endpoint
+        // if no entry is found, return early
+        let table = self.routing_table.borrow();
+        let Some(rx) = table.get(&self.port).map(|c| &c.rx) else {
+            return Ok((0, None));
+        };
+        if let Ok(entry) = rx.try_recv() {
+            if entry.to != self.addr() {
+                return Err(io::Error::new(
+                    ErrorKind::Other,
+                    "received packet for wrong address",
+                ));
+            }
+            let len = entry.packet.len();
+            buf[..len].copy_from_slice(&entry.packet[..len]);
+            return Ok((len, Some(entry.from)));
+        }
+        Ok((0, None))
+    }
+    fn send(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Self::Error> {
+        // routing table -> given an addr, look through the table for the sending endpoint
+        // if no entry is found, return early
+        let table = self.routing_table.borrow();
+        let Some(tx) = table.get(&addr.port()).map(|c| &c.tx) else {
+            return Ok(0);
+        };
+        if rand_float(0.0..100.) < self.cfg.packet_loss_percent {
+            log::error!("packet lost {}", buf[0] & 0xF);
+            return Ok(0);
+        }
+        let mut delay = self.cfg.latency_ms / 1000.0;
+        if self.cfg.jitter_ms > 0.0 {
+            delay += rand_float(-self.cfg.jitter_ms..self.cfg.jitter_ms) / 1000.0;
+        }
+        let mut entry = PacketEntry {
+            from: self.addr(),
+            to: addr,
+            delivery_time: self.time + delay,
+            packet: buf.to_vec(),
+        };
+        tx.send(entry.clone()).ok();
+        if rand_float(0.0..100.) < self.cfg.duplicate_packet_percent {
+            log::error!("duplicating packet");
+            entry.delivery_time += rand_float(0.0..1.);
+            tx.send(entry).ok();
+        }
+        Ok(buf.len())
+    }
+}
+
+mod tests {
+    use crate::{
+        client::{Client, ClientState},
+        consts::DEFAULT_CONNECTION_TIMEOUT_SECONDS,
+    };
+
+    use super::*;
+
+    #[allow(dead_code)]
+    fn enable_logging() {
+        env_logger::Builder::new()
+            .filter(None, log::LevelFilter::Trace)
+            .init();
+    }
+
+    #[test]
+    fn client_server_connect_send_recv() {
+        // enable_logging();
+
+        let routing_table = Rc::new(RefCell::new(HashMap::new()));
+        let client_sim = NetworkSimulator::new(40000, routing_table.clone());
+        let server_sim = NetworkSimulator::new(50000, routing_table.clone());
+
+        let mut time = 0.0;
+        let delta = 1. / 10.;
+
+        let mut server = Server::with_simulator(server_sim).unwrap();
+
+        let token = server
+            .token(123u64)
+            .expire_seconds(-1)
+            .timeout_seconds(-1)
+            .generate()
+            .unwrap();
+
+        let mut client = Client::with_simulator(token, client_sim).unwrap();
+
+        client.connect().unwrap();
+
+        loop {
+            client.update(time).unwrap();
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time).unwrap();
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.state() == ClientState::Connected {
+                break;
+            }
+
+            time += delta;
+        }
+        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.iter_clients().last().unwrap(), 0);
+        assert!(client.is_connected());
+
+        let mut payload = vec![b'a'];
+        loop {
+            client.update(time).unwrap();
+            client.send(&payload).unwrap();
+            let mut buf = [0; 1175];
+            let size = client.recv(&mut buf).unwrap();
+            if size > 0 {
+                payload = buf[..size].to_vec();
+                payload.push(payload.last().unwrap() + 1);
+            }
+
+            server.update(time).unwrap();
+            let mut buf = [0; 1175];
+            let size = server.recv(&mut buf).unwrap();
+            if size > 0 {
+                payload = buf[..size].to_vec();
+                payload.push(payload.last().unwrap() + 1);
+            }
+            server.send(&payload, 0).unwrap();
+
+            if payload.contains(&(b'z')) {
+                break;
+            }
+
+            time += delta;
+        }
+        assert_eq!(payload, b"abcdefghijklmnopqrstuvwxyz");
+    }
+
+    #[test]
+    fn client_server_timeout() {
+        // enable_logging();
+
+        let routing_table = Rc::new(RefCell::new(HashMap::new()));
+        let client_sim = NetworkSimulator::new(40000, routing_table.clone());
+        let server_sim = NetworkSimulator::new(50000, routing_table.clone());
+
+        let mut time = 0.0;
+        let delta = 1. / 10.;
+
+        let mut server = Server::with_simulator(server_sim).unwrap();
+
+        let token = server.token(123u64).generate().unwrap();
+
+        let mut client = Client::with_simulator(token, client_sim).unwrap();
+
+        client.connect().unwrap();
+
+        // connect client
+        loop {
+            client.update(time).unwrap();
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time).unwrap();
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_connected() || client.is_error() {
+                break;
+            }
+
+            time += delta;
+        }
+        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.iter_clients().last().unwrap(), 0);
+        assert!(client.is_connected());
+
+        // now don't update server for a while and ensure client times out
+        let num_iterations =
+            (1.5 * DEFAULT_CONNECTION_TIMEOUT_SECONDS as f64 / delta).ceil() as usize;
+        for _ in 0..num_iterations {
+            client.update(time).unwrap();
+            client.recv(&mut [0; 1175]).unwrap();
+
+            time += delta;
+        }
+        assert!(client.is_error());
+        assert!(client.state() == ClientState::ConnectionTimedOut);
+    }
+
+    #[test]
+    fn client_server_keep_alive() {
+        // enable_logging();
+
+        let routing_table = Rc::new(RefCell::new(HashMap::new()));
+        let client_sim = NetworkSimulator::new(40000, routing_table.clone());
+        let server_sim = NetworkSimulator::new(50000, routing_table.clone());
+
+        let mut time = 0.0;
+        let delta = 1. / 10.;
+
+        let mut server = Server::with_simulator(server_sim).unwrap();
+
+        let token = server.token(123u64).generate().unwrap();
+
+        let mut client = Client::with_simulator(token, client_sim).unwrap();
+
+        client.connect().unwrap();
+
+        let num_iterations =
+            (1.5 * DEFAULT_CONNECTION_TIMEOUT_SECONDS as f64 / delta).ceil() as usize;
+        let mut iterations_done = 0;
+        for i in 0..num_iterations {
+            client.update(time).unwrap();
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time).unwrap();
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_connected() || client.is_error() {
+                break;
+            }
+
+            time += delta;
+            iterations_done = i;
+        }
+        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.iter_clients().last().unwrap(), 0);
+        assert!(client.is_connected());
+        assert!(iterations_done < num_iterations);
+    }
+}
