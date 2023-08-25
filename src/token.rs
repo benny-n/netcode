@@ -1,4 +1,5 @@
 use byteorder::{LittleEndian, WriteBytesExt};
+use thiserror::Error;
 
 use crate::{
     bytes::Bytes,
@@ -16,6 +17,20 @@ use std::{
     mem::size_of,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
 };
+
+#[derive(Error, Debug)]
+pub enum InvalidTokenError {
+    #[error("address list length is out of range 1-32: {0}")]
+    AddressListLength(u32),
+    #[error("invalid ip address type (must be 1 for ipv4 or 2 for ipv6): {0}")]
+    InvalidIpAddressType(u8),
+    #[error("create timestamp is greater than expire timestamp")]
+    InvalidTimestamp,
+    #[error("invalid version")]
+    InvalidVersion,
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AddressList {
@@ -61,7 +76,8 @@ impl std::ops::Index<usize> for AddressList {
 
 impl Bytes for AddressList {
     const SIZE: usize = size_of::<u32>() + MAX_SERVERS_PER_CONNECT * (1 + size_of::<u16>() + 16);
-    fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
+    type Error = InvalidTokenError;
+    fn write_to(&self, buf: &mut impl io::Write) -> Result<(), InvalidTokenError> {
         buf.write_u32::<LittleEndian>(self.len() as u32)?;
         for addr in self.iter() {
             match addr {
@@ -80,14 +96,11 @@ impl Bytes for AddressList {
         Ok(())
     }
 
-    fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
+    fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, InvalidTokenError> {
         let len = reader.read_u32::<LittleEndian>()?;
 
         if !(1..=MAX_SERVERS_PER_CONNECT as u32).contains(&len) {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("address list length is out of range 1-32: {}", len),
-            ));
+            return Err(InvalidTokenError::AddressListLength(len));
         }
 
         let mut addrs = FreeList::new();
@@ -107,12 +120,7 @@ impl Bytes for AddressList {
                     let port = reader.read_u16::<LittleEndian>()?;
                     SocketAddr::from((Ipv6Addr::from(octets), port))
                 }
-                t => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("invalid ip address type (must be 1 for ipv4 or 2 for ipv6): {t}"),
-                    ))
-                }
+                t => return Err(InvalidTokenError::InvalidIpAddressType(t)),
             };
             addrs.insert(addr);
         }
@@ -174,10 +182,13 @@ impl ConnectTokenPrivate {
 
 impl Bytes for ConnectTokenPrivate {
     const SIZE: usize = 1024; // always padded to 1024 bytes
+    type Error = io::Error;
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
         buf.write_u64::<LittleEndian>(self.client_id)?;
         buf.write_i32::<LittleEndian>(self.timeout_seconds)?;
-        self.server_addresses.write_to(buf)?;
+        self.server_addresses
+            .write_to(buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         buf.write_all(&self.client_to_server_key)?;
         buf.write_all(&self.server_to_client_key)?;
         buf.write_all(&self.user_data)?;
@@ -187,7 +198,8 @@ impl Bytes for ConnectTokenPrivate {
     fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
         let client_id = reader.read_u64::<LittleEndian>()?;
         let timeout_seconds = reader.read_i32::<LittleEndian>()?;
-        let server_addresses = AddressList::read_from(reader)?;
+        let server_addresses =
+            AddressList::read_from(reader).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         let mut client_to_server_key = [0; PRIVATE_KEY_SIZE];
         reader.read_exact(&mut client_to_server_key)?;
@@ -237,6 +249,7 @@ impl ChallengeToken {
 
 impl Bytes for ChallengeToken {
     const SIZE: usize = size_of::<u64>() + USER_DATA_SIZE;
+    type Error = io::Error;
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
         buf.write_u64::<LittleEndian>(self.client_id)?;
         buf.write_all(&self.user_data)?;
@@ -315,13 +328,14 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
         self.private_key = Some(private_key);
         self
     }
-    /// Sets the *internal* server addresses in the private data of the token. <br>
-    /// If this field is not set, the *public* server addresses provided when creating the builder will be used instead.
+    /// Sets the **internal** server addresses in the private data of the token. <br>
+    /// If this field is not set, the **public** server addresses provided when creating the builder will be used instead.
     ///
-    /// This is useful for when you bind your server to a local address that is not accessible from the internet, <br>
+    /// The **internal** server addresses list is used by the server to determine if the client is connecting to the same server that issued the token.
+    /// The client will always use the **public** server addresses list to connect to the server, never the **internal** ones.
+    ///
+    /// This is useful for when you bind your server to a local address that is not accessible from the internet,
     /// but you want to provide a public address that is accessible to the client.
-    ///
-    /// The client will always use the *public* server addresses list to connect to the server, never the *internal* ones.
     pub fn internal_address_list(mut self, internal_addresses: A) -> Result<Self, Error> {
         self.internal_server_addresses = Some(AddressList::new(internal_addresses)?);
         Ok(self)
@@ -386,14 +400,20 @@ impl ConnectToken {
     pub fn try_into_bytes(self) -> Result<[u8; Self::SIZE], io::Error> {
         let mut buf = [0u8; Self::SIZE];
         let mut cursor = io::Cursor::new(&mut buf[..]);
-        self.write_to(&mut cursor)?;
+        self.write_to(&mut cursor).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("failed to write token to buffer: {}", e),
+            )
+        })?;
         Ok(buf)
     }
 }
 
 impl Bytes for ConnectToken {
     const SIZE: usize = 2048; // always padded to 2048 bytes
-    fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
+    type Error = InvalidTokenError;
+    fn write_to(&self, buf: &mut impl io::Write) -> Result<(), Self::Error> {
         buf.write_all(&self.version_info)?;
         buf.write_u64::<LittleEndian>(self.protocol_id)?;
         buf.write_u64::<LittleEndian>(self.create_timestamp)?;
@@ -407,12 +427,12 @@ impl Bytes for ConnectToken {
         Ok(())
     }
 
-    fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
+    fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, Self::Error> {
         let mut version_info = [0; NETCODE_VERSION.len()];
         reader.read_exact(&mut version_info)?;
 
         if version_info != *NETCODE_VERSION {
-            return Err(io::Error::new(io::ErrorKind::Other, "bad version info"));
+            return Err(InvalidTokenError::InvalidVersion);
         }
 
         let protocol_id = reader.read_u64::<LittleEndian>()?;
@@ -421,10 +441,7 @@ impl Bytes for ConnectToken {
         let expire_timestamp = reader.read_u64::<LittleEndian>()?;
 
         if create_timestamp > expire_timestamp {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "create timestamp is greater than expire timestamp",
-            ));
+            return Err(InvalidTokenError::InvalidTimestamp);
         }
 
         let nonce = reader.read_u64::<LittleEndian>()?;

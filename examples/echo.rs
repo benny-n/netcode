@@ -2,23 +2,14 @@ use std::{
     io::{self, BufRead},
     sync::mpsc::{self, RecvTimeoutError},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use env_logger::Builder;
 use log::LevelFilter;
 
-use netcode::{
-    client::{Client, ClientState},
-    server::{Server, ServerConfig},
-};
+use netcode::{Client, ClientState, Server, ServerConfig};
 
-fn time_now_secs_f64() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-}
 fn main() {
     Builder::new().filter(None, LevelFilter::Info).init();
 
@@ -43,10 +34,12 @@ fn main() {
 
     let buf = token.try_into_bytes().unwrap();
 
+    let start = Instant::now();
+    let tick_rate = 1.0 / 60.0;
+
     let server_thread = thread::spawn(move || {
         loop {
-            thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
-            let now = time_now_secs_f64();
+            let now = start.elapsed().as_secs_f64();
             server.update(now).unwrap();
 
             let mut packet = [0; 1175];
@@ -58,6 +51,7 @@ fn main() {
                 // echoing back
                 server.send(&packet[..received], client_idx).unwrap();
             }
+            thread::sleep(Duration::from_secs_f64(tick_rate));
         }
     });
 
@@ -67,8 +61,7 @@ fn main() {
     let (tx, rx) = mpsc::channel::<String>();
     let client_thread = thread::spawn(move || {
         loop {
-            thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
-            let now = time_now_secs_f64();
+            let now = start.elapsed().as_secs_f64();
             client.update(now).unwrap();
 
             let mut packet = [0; 1175];
@@ -91,6 +84,7 @@ fn main() {
                     Err(_) => break,
                 }
             }
+            thread::sleep(Duration::from_secs_f64(tick_rate));
         }
     });
 

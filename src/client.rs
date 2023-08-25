@@ -27,11 +27,12 @@ type Callback<Ctx> =
 /// # Example
 /// ```
 /// # struct MyContext;
+/// # use netcode::Server;
 /// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
 /// # let private_key = [42u8; 32];
-/// # let token = netcode::server::Server::new(addr, 0x11223344, Some(private_key)).unwrap().token(123u64).generate().unwrap();
+/// # let token = Server::new(addr, 0x11223344, Some(private_key)).unwrap().token(123u64).generate().unwrap();
 /// # let token_bytes = token.try_into_bytes().unwrap();
-/// use netcode::client::{Client, ClientConfig, ClientState};
+/// use netcode::{Client, ClientConfig, ClientState};
 ///
 /// let cfg = ClientConfig::with_context(MyContext {})
 ///     .num_disconnect_packets(10)
@@ -194,8 +195,7 @@ impl Client<NetcodeSocket> {
     ///
     /// # Example
     /// ```
-    /// # use netcode::client::{Client, ClientConfig, ClientState};
-    /// # use netcode::token::ConnectToken;
+    /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
     /// // Generate a connection token for the client
     /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, 0).generate().unwrap().try_into_bytes().unwrap();
     ///
@@ -221,8 +221,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     ///
     /// # Example
     /// ```
-    /// # use netcode::client::{Client, ClientConfig, ClientState};
-    /// # use netcode::token::ConnectToken;
+    /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
     /// # struct MyContext;
     /// // Generate a connection token for the client
     /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, 0).generate().unwrap().try_into_bytes().unwrap();
@@ -564,7 +563,7 @@ mod tests {
         let Err(err) = Client::new(&token_bytes) else {
             panic!("expected error");
         };
-        assert_eq!("invalid connect token: bad version info", err.to_string());
+        assert_eq!("invalid connect token: invalid version", err.to_string());
         let mut token_bytes = [0u8; ConnectToken::SIZE];
         let mut cursor = std::io::Cursor::new(&mut token_bytes[..]);
         cursor.write_all(NETCODE_VERSION).unwrap();

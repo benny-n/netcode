@@ -7,14 +7,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
-    #[error("invalid connect token: {0}")]
-    InvalidToken(std::io::Error),
     #[error("buffer size mismatch, expected {0} but got {1}")]
     SizeMismatch(usize, usize),
     #[error("tried to send a packet to a client that doesn't exist")]
     ClientNotFound,
     #[error("clock went backwards (did you invent a time machine?): {0}")]
-    SystemTimeError(#[from] std::time::SystemTimeError),
+    SystemTime(#[from] std::time::SystemTimeError),
+    #[error("invalid connect token: {0}")]
+    InvalidToken(crate::token::InvalidTokenError),
     #[error(transparent)]
     Socket(#[from] crate::socket::Error),
     #[error(transparent)]

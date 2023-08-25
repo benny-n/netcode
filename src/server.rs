@@ -243,7 +243,7 @@ type Callback<Ctx> = Box<dyn FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync 
 /// # let protocol_id = 0x123456789ABCDEF0;
 /// # let private_key = [42u8; 32];
 /// use std::sync::{Arc, Mutex};
-/// use netcode::server::{Server, ServerConfig};
+/// use netcode::{Server, ServerConfig};
 ///
 /// let thread_safe_counter = Arc::new(Mutex::new(0));
 /// let cfg = ServerConfig::with_context(thread_safe_counter).on_connect(|idx, ctx| {
@@ -343,7 +343,7 @@ impl Server<NetcodeSocket> {
     ///
     /// # Example
     /// ```
-    /// use netcode::server::Server;
+    /// use netcode::Server;
     /// use std::net::{SocketAddr, Ipv4Addr};
     ///
     /// let private_key = [42u8; 32]; // TODO: generate a real private key
@@ -382,7 +382,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
     ///
     /// # Example
     /// ```
-    /// use netcode::server::{Server, ServerConfig};
+    /// use netcode::{Server, ServerConfig};
     /// use std::net::{SocketAddr, Ipv4Addr};
     ///
     /// let private_key = [42u8; 32]; // TODO: generate a real private key
@@ -610,7 +610,9 @@ impl<T: Transceiver, S> Server<T, S> {
         from_addr: SocketAddr,
         mut packet: ResponsePacket,
     ) -> Result<()> {
-        let Ok(challenge_token) = ChallengeToken::decrypt(&mut packet.token, packet.sequence, &self.challenge_key) else {
+        let Ok(challenge_token) =
+            ChallengeToken::decrypt(&mut packet.token, packet.sequence, &self.challenge_key)
+        else {
             log::debug!("server ignored connection response. failed to decrypt challenge token");
             return Ok(());
         };
@@ -697,7 +699,7 @@ impl<T: Transceiver, S> Server<T, S> {
     /// # Example
     ///
     /// ```
-    /// # use netcode::server::{Server, ServerConfig};
+    /// # use netcode::{Server, ServerConfig};
     /// # use std::net::{SocketAddr, Ipv4Addr};
     ///  
     /// let private_key = Some([42u8; 32]); // TODO: generate a real private key

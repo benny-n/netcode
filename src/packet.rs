@@ -122,7 +122,8 @@ impl RequestPacket {
 }
 
 impl Bytes for RequestPacket {
-    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         writer.write_all(&self.version_info)?;
         writer.write_u64::<LittleEndian>(self.protocol_id)?;
         writer.write_u64::<LittleEndian>(self.expire_timestamp)?;
@@ -156,7 +157,8 @@ impl DeniedPacket {
     }
 }
 impl Bytes for DeniedPacket {
-    fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -179,7 +181,8 @@ impl ChallengePacket {
 }
 
 impl Bytes for ChallengePacket {
-    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         writer.write_u64::<LittleEndian>(self.sequence)?;
         writer.write_all(&self.token)?;
         Ok(())
@@ -206,7 +209,8 @@ impl ResponsePacket {
     }
 }
 impl Bytes for ResponsePacket {
-    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         writer.write_u64::<LittleEndian>(self.sequence)?;
         writer.write_all(&self.token)?;
         Ok(())
@@ -233,7 +237,8 @@ impl KeepAlivePacket {
     }
 }
 impl Bytes for KeepAlivePacket {
-    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         writer.write_i32::<LittleEndian>(self.client_index)?;
         writer.write_i32::<LittleEndian>(self.max_clients)?;
         Ok(())
@@ -265,7 +270,8 @@ impl DisconnectPacket {
     }
 }
 impl Bytes for DisconnectPacket {
-    fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -544,7 +550,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Request (req_pkt) = packet else {
+        let Packet::Request(req_pkt) = packet else {
             panic!("wrong packet type");
         };
 
@@ -591,7 +597,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Denied (_denied_pkt) = packet else {
+        let Packet::Denied(_denied_pkt) = packet else {
             panic!("wrong packet type");
         };
     }
@@ -621,7 +627,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Challenge (challenge_pkt) = packet else {
+        let Packet::Challenge(challenge_pkt) = packet else {
             panic!("wrong packet type");
         };
 
@@ -658,7 +664,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::KeepAlive (keep_alive_pkt) = packet else {
+        let Packet::KeepAlive(keep_alive_pkt) = packet else {
             panic!("wrong packet type");
         };
 
@@ -690,7 +696,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Disconnect (_disconnect_pkt) = packet else {
+        let Packet::Disconnect(_disconnect_pkt) = packet else {
             panic!("wrong packet type");
         };
     }
@@ -720,7 +726,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Payload (data_pkt) = packet else {
+        let Packet::Payload(data_pkt) = packet else {
             panic!("wrong packet type");
         };
 
