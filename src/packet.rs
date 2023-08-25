@@ -543,7 +543,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Request (req_pkt) = packet else {
+        let Packet::Request(req_pkt) = packet else {
             panic!("wrong packet type");
         };
 
@@ -590,7 +590,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Denied (_denied_pkt) = packet else {
+        let Packet::Denied(_denied_pkt) = packet else {
             panic!("wrong packet type");
         };
     }
@@ -620,7 +620,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Challenge (challenge_pkt) = packet else {
+        let Packet::Challenge(challenge_pkt) = packet else {
             panic!("wrong packet type");
         };
 
@@ -657,7 +657,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::KeepAlive (keep_alive_pkt) = packet else {
+        let Packet::KeepAlive(keep_alive_pkt) = packet else {
             panic!("wrong packet type");
         };
 
@@ -689,7 +689,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Disconnect (_disconnect_pkt) = packet else {
+        let Packet::Disconnect(_disconnect_pkt) = packet else {
             panic!("wrong packet type");
         };
     }
@@ -719,7 +719,7 @@ mod tests {
         )
         .unwrap();
 
-        let Packet::Payload (data_pkt) = packet else {
+        let Packet::Payload(data_pkt) = packet else {
             panic!("wrong packet type");
         };
 
