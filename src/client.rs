@@ -5,7 +5,6 @@ use std::{
 
 use crate::{
     bytes::Bytes,
-    consts::{MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE},
     error::{Error, Result},
     packet::{
         DisconnectPacket, KeepAlivePacket, Packet, PayloadPacket, RequestPacket, ResponsePacket,
@@ -14,6 +13,7 @@ use crate::{
     socket::NetcodeSocket,
     token::{ChallengeToken, ConnectToken},
     transceiver::Transceiver,
+    MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
 };
 
 type Callback<Ctx> =
@@ -56,7 +56,7 @@ impl<Ctx> Default for ClientConfig<Ctx> {
     fn default() -> Self {
         Self {
             num_disconnect_packets: 10,
-            packet_send_rate: PACKET_SEND_RATE,
+            packet_send_rate: PACKET_SEND_RATE_SEC,
             ctx: None,
             on_state_change: None,
         }
@@ -64,11 +64,11 @@ impl<Ctx> Default for ClientConfig<Ctx> {
 }
 
 impl<Ctx> ClientConfig<Ctx> {
-    /// Create a new, default client configuration.
+    /// Create a new, default client configuration with no context.
     pub fn new() -> ClientConfig<()> {
         ClientConfig::<()>::default()
     }
-    /// Create a new client configuration with a context.
+    /// Create a new client configuration with context that will be passed to the callbacks.
     pub fn with_context(ctx: Ctx) -> Self {
         Self {
             ctx: Some(Box::new(ctx)),
@@ -76,13 +76,15 @@ impl<Ctx> ClientConfig<Ctx> {
         }
     }
     /// Set the number of redundant disconnect packets that will be sent to a server when the clients wants to disconnect.
+    /// The default is 10 packets.
     pub fn num_disconnect_packets(mut self, num_disconnect_packets: usize) -> Self {
         self.num_disconnect_packets = num_disconnect_packets;
         self
     }
     /// Set the rate at which periodic packets will be sent to the server.
-    pub fn packet_send_rate(mut self, packet_send_rate: f64) -> Self {
-        self.packet_send_rate = packet_send_rate;
+    /// The default is 10 packets per second. (`0.1` seconds)
+    pub fn packet_send_rate(mut self, rate_seconds: f64) -> Self {
+        self.packet_send_rate = rate_seconds;
         self
     }
     /// Set a callback that will be called when the client changes states.
@@ -469,8 +471,8 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         if self.state != ClientState::Connected {
             return Ok(());
         }
-        if buf.len() > MAX_PAYLOAD_SIZE {
-            return Err(Error::SizeMismatch(MAX_PAYLOAD_SIZE, buf.len()));
+        if buf.len() > MAX_PACKET_SIZE {
+            return Err(Error::SizeMismatch(MAX_PACKET_SIZE, buf.len()));
         }
         self.send_packet(PayloadPacket::create(buf))?;
         Ok(())
@@ -528,8 +530,8 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consts::NETCODE_VERSION;
     use crate::simulator::NetworkSimulator;
+    use crate::NETCODE_VERSION;
     use std::io::Write;
     impl Client<NetworkSimulator> {
         pub fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {

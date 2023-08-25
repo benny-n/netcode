@@ -3,13 +3,10 @@ use thiserror::Error;
 
 use crate::{
     bytes::Bytes,
-    consts::{
-        DEFAULT_CONNECTION_TIMEOUT_SECONDS, DEFAULT_TOKEN_EXPIRE_SECONDS, MAX_SERVERS_PER_CONNECT,
-        NETCODE_VERSION, PRIVATE_KEY_SIZE, USER_DATA_SIZE,
-    },
     crypto::{self, Key},
     error::Error,
     free_list::{FreeList, FreeListIter},
+    CONNECTION_TIMEOUT_SEC, NETCODE_VERSION, PRIVATE_KEY_SIZE, USER_DATA_SIZE,
 };
 
 use std::{
@@ -17,6 +14,9 @@ use std::{
     mem::size_of,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
 };
+
+const MAX_SERVERS_PER_CONNECT: usize = 32;
+const TOKEN_EXPIRE_SEC: i32 = 30;
 
 #[derive(Error, Debug)]
 pub enum InvalidTokenError {
@@ -299,9 +299,9 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
         Self {
             protocol_id,
             client_id,
-            expire_seconds: DEFAULT_TOKEN_EXPIRE_SECONDS,
+            expire_seconds: TOKEN_EXPIRE_SEC,
             nonce,
-            timeout_seconds: DEFAULT_CONNECTION_TIMEOUT_SECONDS,
+            timeout_seconds: CONNECTION_TIMEOUT_SEC,
             public_server_addresses: server_addresses,
             internal_server_addresses: None,
             private_key: None,

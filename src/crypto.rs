@@ -5,7 +5,7 @@ use chacha20poly1305::{
 };
 use std::io;
 
-use crate::consts::{MAC_SIZE, PRIVATE_KEY_SIZE};
+use crate::{MAC_SIZE, PRIVATE_KEY_SIZE};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -19,10 +19,21 @@ pub enum Error {
     #[error("failed to generate key: {0}")]
     GenerateKey(chacha20poly1305::aead::rand_core::Error),
 }
-
-pub type Key = [u8; crate::consts::PRIVATE_KEY_SIZE];
+/// A 32-byte array, used as a key for encrypting and decrypting packets and connect tokens.
+pub type Key = [u8; crate::PRIVATE_KEY_SIZE];
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Generates a random key for use with the netcode protocol.
+///
+/// Returns an error if the underlying RNG fails (highly unlikely).
+///
+/// # Examples
+/// ```
+/// use netcode::generate_key;
+///
+/// let key = generate_key().unwrap();
+/// assert_eq!(key.len(), 32);
+/// ```
 pub fn generate_key() -> Result<Key> {
     let mut key: Key = [0; PRIVATE_KEY_SIZE];
     OsRng.try_fill_bytes(&mut key).map_err(Error::GenerateKey)?;

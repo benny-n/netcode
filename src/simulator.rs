@@ -128,8 +128,8 @@ impl Transceiver for NetworkSimulator {
 mod tests {
     use crate::{
         client::{Client, ClientState},
-        consts::DEFAULT_CONNECTION_TIMEOUT_SECONDS,
         token::ConnectToken,
+        CONNECTION_TIMEOUT_SEC,
     };
 
     use super::*;
@@ -250,8 +250,7 @@ mod tests {
         assert!(client.is_connected());
 
         // now don't update server for a while and ensure client times out
-        let num_iterations =
-            (1.5 * DEFAULT_CONNECTION_TIMEOUT_SECONDS as f64 / delta).ceil() as usize;
+        let num_iterations = (1.5 * CONNECTION_TIMEOUT_SEC as f64 / delta).ceil() as usize;
         for _ in 0..num_iterations {
             client.update(time).unwrap();
             client.recv(&mut [0; 1175]).unwrap();
@@ -281,8 +280,7 @@ mod tests {
 
         client.connect();
 
-        let num_iterations =
-            (1.5 * DEFAULT_CONNECTION_TIMEOUT_SECONDS as f64 / delta).ceil() as usize;
+        let num_iterations = (1.5 * CONNECTION_TIMEOUT_SEC as f64 / delta).ceil() as usize;
         let mut iterations_done = 0;
         for i in 0..num_iterations {
             client.update(time).unwrap();

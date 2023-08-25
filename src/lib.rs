@@ -1,12 +1,12 @@
 //! # netcode
 //!
 //! The `netcode` crate implements the [netcode](https://github.com/networkprotocol/netcode)
-//! network protocol for multiplayer games created by [Glenn Fiedler](https://gafferongames.com).
+//! network protocol created by [Glenn Fiedler](https://gafferongames.com) for multiplayer games.
 //!
 //! > “ _**netcode** is a simple connection based client/server protocol built on top of UDP_ ”
 //!
 //! `netcode` is a thin wrapper over UDP sockets, offering a connection-based secure data transfer.
-//!  Its core design and feature set are tailored specifically to meet the demands of multiplayer games.
+//!  Its core design and feature set are tailored specifically to meet the demands of multiplayer games networking.
 //!
 //! ## Server
 //!
@@ -24,7 +24,7 @@
 //!
 //! ```
 //! # use std::{thread, time::{Instant, Duration, SystemTime, UNIX_EPOCH}};
-//! use netcode::{Server, MAX_PAYLOAD_SIZE};
+//! use netcode::{Server, MAX_PACKET_SIZE};
 //!
 //! // Create a server
 //! let protocol_id = 0x11223344;
@@ -38,9 +38,9 @@
 //!     thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
 //!     let now = start.elapsed().as_secs_f64();
 //!     server.update(now).unwrap();
-//!     let mut payload = [0; MAX_PAYLOAD_SIZE];
-//!     if let Ok(Some((received, _))) = server.recv(&mut payload) {
-//!        let payload = &payload[..received];
+//!     let mut packet = [0; MAX_PACKET_SIZE];
+//!     if let Ok(Some((received, _))) = server.recv(&mut packet) {
+//!        let payload = &packet[..received];
 //!        // ...
 //!     }
 //! #   else { break;}
@@ -49,7 +49,7 @@
 //!
 //! ## Client
 //!
-//! The game client connects to the server and communicates using the same protocol.
+//! The netcode client connects to the server and communicates using the same protocol.
 //!
 //! Like the server, the game client should run in a loop to process incoming data,
 //! send updates to the server, and maintain a stable connection.
@@ -59,7 +59,7 @@
 //!  * Optionally provide a [`ClientConfig`](ClientConfig) - a struct that allows you to customize the client's behavior.
 //!
 //! ```
-//! use netcode::{ConnectToken, Client, MAX_PAYLOAD_SIZE};
+//! use netcode::{ConnectToken, Client, MAX_PACKET_SIZE};
 //!
 //! // Generate a connection token for the client
 //! let protocol_id = 0x11223344;
@@ -80,7 +80,6 @@
 //! ```
 
 mod bytes;
-mod consts;
 mod crypto;
 mod free_list;
 mod packet;
@@ -96,8 +95,24 @@ mod error;
 mod server;
 mod token;
 
+pub(crate) const MAC_SIZE: usize = 16;
+pub(crate) const MAX_PKT_BUF_SIZE: usize = 1300;
+pub(crate) const CONNECTION_TIMEOUT_SEC: i32 = 15;
+pub(crate) const PACKET_SEND_RATE_SEC: f64 = 1.0 / 10.0;
+pub(crate) const PRIVATE_KEY_SIZE: usize = 32;
+
+// Re-exports
 pub use crate::client::{Client, ClientConfig, ClientState};
-pub use crate::crypto::generate_key;
+pub use crate::crypto::{generate_key, Key};
+pub use crate::error::{Error, Result};
 pub use crate::server::{Server, ServerConfig};
-pub use crate::token::{ConnectToken, ConnectTokenBuilder};
-pub use consts::*;
+pub use crate::token::{ConnectToken, ConnectTokenBuilder, InvalidTokenError};
+
+// Public constants
+
+/// The size of the user data in a connect token.
+pub const USER_DATA_SIZE: usize = 256;
+/// The maximum size of a packet in bytes.
+pub const MAX_PACKET_SIZE: usize = 1200;
+/// The version of the netcode protocol implemented by this crate as a null-terminated byte-array.
+pub const NETCODE_VERSION: &[u8; 13] = b"NETCODE 1.01\0";

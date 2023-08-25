@@ -7,11 +7,11 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{
     bytes::Bytes,
-    consts::{MAC_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION},
     crypto::{self, Key},
     error::Error as NetcodeError,
     replay::ReplayProtection,
     token::{ChallengeToken, ConnectTokenPrivate},
+    MAC_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -473,11 +473,7 @@ pub fn sequence_len(sequence: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        consts::{MAX_PAYLOAD_SIZE, USER_DATA_SIZE},
-        crypto::generate_key,
-        token::AddressList,
-    };
+    use crate::{crypto::generate_key, token::AddressList, MAX_PACKET_SIZE, USER_DATA_SIZE};
 
     use super::*;
 
@@ -535,7 +531,7 @@ mod tests {
             token_data,
         });
 
-        let mut buf = [0u8; MAX_PAYLOAD_SIZE];
+        let mut buf = [0u8; MAX_PACKET_SIZE];
         let size = packet
             .write(&mut buf, sequence, &packet_key, protocol_id)
             .unwrap();
@@ -711,7 +707,7 @@ mod tests {
         let payload = vec![0u8; 100];
         let packet = Packet::Payload(PayloadPacket { buf: &payload });
 
-        let mut buf = [0u8; MAX_PAYLOAD_SIZE];
+        let mut buf = [0u8; MAX_PACKET_SIZE];
         let size = packet
             .write(&mut buf, sequence, &packet_key, protocol_id)
             .unwrap();

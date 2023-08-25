@@ -4,7 +4,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     bytes::Bytes,
-    consts::{MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE},
     crypto::{self, Key},
     error::{Error, Result},
     free_list::FreeList,
@@ -16,7 +15,10 @@ use crate::{
     socket::NetcodeSocket,
     token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate},
     transceiver::Transceiver,
+    MAC_SIZE, MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
 };
+
+const MAX_CLIENTS: usize = 256;
 
 #[derive(Clone, Copy)]
 struct TokenEntry {
@@ -266,7 +268,7 @@ impl<Ctx> Default for ServerConfig<Ctx> {
     fn default() -> Self {
         Self {
             num_disconnect_packets: 10,
-            keep_alive_send_rate: PACKET_SEND_RATE,
+            keep_alive_send_rate: PACKET_SEND_RATE_SEC,
             context: None,
             on_connect: None,
             on_disconnect: None,
@@ -275,11 +277,11 @@ impl<Ctx> Default for ServerConfig<Ctx> {
 }
 
 impl<Ctx> ServerConfig<Ctx> {
-    /// Create a new, default server configuration.
+    /// Create a new, default server configuration with no context.
     pub fn new() -> ServerConfig<()> {
         ServerConfig::<()>::default()
     }
-    /// Create a new server configuration with a state that will be passed to the callbacks.
+    /// Create a new server configuration with context that will be passed to the callbacks.
     pub fn with_context(ctx: Ctx) -> Self {
         Self {
             context: Some(Box::new(ctx)),
@@ -292,10 +294,10 @@ impl<Ctx> ServerConfig<Ctx> {
         self.num_disconnect_packets = num;
         self
     }
-    /// Set the rate at which keep alive packets will be sent to clients. <br>
-    /// The default is 10 packets per second.
-    pub fn keep_alive_send_rate(mut self, rate: f64) -> Self {
-        self.keep_alive_send_rate = rate;
+    /// Set the rate (in seconds) at which keep alive packets will be sent to clients. <br>
+    /// The default is 10 packets per second. (`0.1` seconds)
+    pub fn keep_alive_send_rate(mut self, rate_seconds: f64) -> Self {
+        self.keep_alive_send_rate = rate_seconds;
         self
     }
     /// Provide a callback that will be called when a client is connected to the server. <br>
@@ -791,8 +793,8 @@ impl<T: Transceiver, S> Server<T, S> {
             .and_then(|idx| (size > 0).then_some((size, idx))))
     }
     pub fn send(&mut self, buf: &[u8], client_idx: ClientIndex) -> Result<()> {
-        if buf.len() > MAX_PAYLOAD_SIZE {
-            return Err(Error::SizeMismatch(MAX_PAYLOAD_SIZE, buf.len()));
+        if buf.len() > MAX_PACKET_SIZE {
+            return Err(Error::SizeMismatch(MAX_PACKET_SIZE, buf.len()));
         }
         let Some(conn) = self.conn_cache.clients.get_mut(client_idx.0) else {
             return Err(Error::ClientNotFound);

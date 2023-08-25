@@ -1,4 +1,4 @@
-use netcode::{Client, Server, MAX_PAYLOAD_SIZE};
+use netcode::{Client, Server, MAX_PACKET_SIZE};
 
 fn main() {
     // Start the server
@@ -27,7 +27,7 @@ fn main() {
     // Run the server and client in parallel
     let server_thread = std::thread::spawn(move || loop {
         server.update(start.elapsed().as_secs_f64()).unwrap();
-        let mut packet = [0; MAX_PAYLOAD_SIZE];
+        let mut packet = [0; MAX_PACKET_SIZE];
         if let Ok(Some((received, _))) = server.recv(&mut packet) {
             println!("{}", std::str::from_utf8(&packet[..received]).unwrap());
             break;
@@ -36,7 +36,7 @@ fn main() {
     });
     let client_thread = std::thread::spawn(move || loop {
         client.update(start.elapsed().as_secs_f64()).unwrap();
-        let mut packet = [0; MAX_PAYLOAD_SIZE];
+        let mut packet = [0; MAX_PACKET_SIZE];
         let _received = client.recv(&mut packet).unwrap();
         if client.is_connected() {
             client.send(b"Hello World!").unwrap();
