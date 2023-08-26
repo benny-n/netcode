@@ -3,10 +3,8 @@
 //! The `netcode` crate implements the [netcode](https://github.com/networkprotocol/netcode)
 //! network protocol created by [Glenn Fiedler](https://gafferongames.com) for multiplayer games.
 //!
-//! > “ _**netcode** is a simple connection based client/server protocol built on top of UDP_ ”
-//!
-//! `netcode` is a thin wrapper over UDP sockets, offering a connection-based secure data transfer.
-//!  Its core design and feature set are tailored specifically to meet the demands of multiplayer games networking.
+//! Being a thin wrapper over UDP sockets, `netcode` is offering a seemingly general purpose connection-based secure data transfer.
+//! However, its core design and feature set are tailored specifically to meet the demands of multiplayer games networking.
 //!
 //! ## Server
 //!

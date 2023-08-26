@@ -5,13 +5,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use env_logger::Builder;
-use log::LevelFilter;
-
 use netcode::{Client, ClientState, Server, ServerConfig};
 
 fn main() {
-    Builder::new().filter(None, LevelFilter::Info).init();
+    env_logger::Builder::new()
+        .filter(None, log::LevelFilter::Info)
+        .init();
 
     let my_secret_private_key = [0u8; 32]; // TODO: generate a real private key
     let cfg = ServerConfig::with_context(42).on_connect(|client_idx, _| {
@@ -37,55 +36,49 @@ fn main() {
     let start = Instant::now();
     let tick_rate = 1.0 / 60.0;
 
-    let server_thread = thread::spawn(move || {
-        loop {
-            let now = start.elapsed().as_secs_f64();
-            server.update(now).unwrap();
+    let server_thread = thread::spawn(move || loop {
+        let now = start.elapsed().as_secs_f64();
+        server.update(now).unwrap();
 
-            let mut packet = [0; 1175];
-            if let Ok(Some((received, client_idx))) = server.recv(&mut packet) {
-                println!(
-                    "server received: {}",
-                    std::str::from_utf8(&packet[..received]).unwrap()
-                );
-                // echoing back
-                server.send(&packet[..received], client_idx).unwrap();
-            }
-            thread::sleep(Duration::from_secs_f64(tick_rate));
+        let mut packet = [0; 1175];
+        if let Ok(Some((received, client_idx))) = server.recv(&mut packet) {
+            println!(
+                "server received: {}",
+                std::str::from_utf8(&packet[..received]).unwrap()
+            );
+            server.send(&packet[..received], client_idx).unwrap();
         }
+        thread::sleep(Duration::from_secs_f64(tick_rate));
     });
 
     let mut client = Client::new(&buf).unwrap();
     client.connect();
 
     let (tx, rx) = mpsc::channel::<String>();
-    let client_thread = thread::spawn(move || {
-        loop {
-            let now = start.elapsed().as_secs_f64();
-            client.update(now).unwrap();
+    let client_thread = thread::spawn(move || loop {
+        let now = start.elapsed().as_secs_f64();
+        client.update(now).unwrap();
 
-            let mut packet = [0; 1175];
-            let received = client.recv(&mut packet).unwrap();
-            if received > 0 {
-                println!(
-                    "echoed back: {}",
-                    std::str::from_utf8(&packet[..received]).unwrap()
-                );
-                // echoing back
-            }
-            if let ClientState::Connected = client.state() {
-                match rx.recv_timeout(Duration::from_millis(16)) {
-                    Ok(msg) => {
-                        if !msg.is_empty() {
-                            client.send(msg.as_bytes()).unwrap();
-                        }
-                    }
-                    Err(RecvTimeoutError::Timeout) => continue,
-                    Err(_) => break,
-                }
-            }
-            thread::sleep(Duration::from_secs_f64(tick_rate));
+        let mut packet = [0; 1175];
+        let received = client.recv(&mut packet).unwrap();
+        if received > 0 {
+            println!(
+                "echoed back: {}",
+                std::str::from_utf8(&packet[..received]).unwrap()
+            );
         }
+        if let ClientState::Connected = client.state() {
+            match rx.recv_timeout(Duration::from_secs_f64(tick_rate)) {
+                Ok(msg) => {
+                    if !msg.is_empty() {
+                        client.send(msg.as_bytes()).unwrap();
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(_) => break,
+            }
+        }
+        thread::sleep(Duration::from_secs_f64(tick_rate));
     });
 
     for line in io::stdin().lock().lines() {

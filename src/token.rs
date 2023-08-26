@@ -18,6 +18,7 @@ use std::{
 const MAX_SERVERS_PER_CONNECT: usize = 32;
 const TOKEN_EXPIRE_SEC: i32 = 30;
 
+/// An error that can occur when de-serializing a connect token from bytes.
 #[derive(Error, Debug)]
 pub enum InvalidTokenError {
     #[error("address list length is out of range 1-32: {0}")]
@@ -267,7 +268,39 @@ impl Bytes for ChallengeToken {
     }
 }
 
-// TODO: document
+/// The connect token contains all the information required for a client to connect to a server.
+///
+/// The token should be provided to the client by some out-of-band method, such as a web service or a game server browser. <br>
+/// See netcode's upstream [specification](https://github.com/networkprotocol/netcode/blob/master/STANDARD.md) for more details.
+///
+/// # Example
+/// ```
+/// use netcode::ConnectToken;
+///
+/// // mandatory fields
+/// let server_address = "127.0.0.1:0"; // the server's public address (can also be multiple addresses)
+/// let protocol_id = 0x11223344; // must match the server's protocol id - unique to your app/game
+/// let client_id = 123; // globally unique identifier for an authenticated client
+/// let nonce = 0; // starts at zero and should increase with each connect token generated
+///
+/// // optional fields
+/// let private_key = netcode::generate_key().unwrap();
+/// let expire_seconds = -1; // defaults to 30 seconds, negative for no expiry
+/// let timeout_seconds = -1; // defaults to 15 seconds, negative for no timeout
+/// let user_data = [0u8; 256]; // custom data
+///
+/// let connect_token = ConnectToken::build(server_address, protocol_id, client_id, nonce)
+///     .private_key(private_key) // if not provided, a random key will be generated for you
+///     .expire_seconds(expire_seconds)
+///     .timeout_seconds(timeout_seconds)
+///     .user_data(user_data)
+///     .generate()
+///     .unwrap();
+///
+/// // Serialize the connect token to a 2048-byte array
+/// let token_bytes = connect_token.try_into_bytes().unwrap();
+/// assert_eq!(token_bytes.len(), 2048);
+/// ```
 pub struct ConnectToken {
     pub(crate) version_info: [u8; NETCODE_VERSION.len()],
     pub(crate) protocol_id: u64,
@@ -281,7 +314,9 @@ pub struct ConnectToken {
     pub(crate) server_to_client_key: Key,
 }
 
-// TODO: document
+/// A builder that can be used to generate a connect token.
+///
+/// See [`ConnectToken`](ConnectToken) for more info.
 pub struct ConnectTokenBuilder<A: ToSocketAddrs> {
     protocol_id: u64,
     client_id: u64,
@@ -388,6 +423,7 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
 }
 
 impl ConnectToken {
+    /// Creates a new connect token builder that can be used to generate a connect token.
     pub fn build<A: ToSocketAddrs>(
         server_addresses: A,
         protocol_id: u64,
@@ -397,6 +433,7 @@ impl ConnectToken {
         ConnectTokenBuilder::new(server_addresses, protocol_id, client_id, nonce)
     }
 
+    /// Tries to convert the token into a 2048-byte array.
     pub fn try_into_bytes(self) -> Result<[u8; Self::SIZE], io::Error> {
         let mut buf = [0u8; Self::SIZE];
         let mut cursor = io::Cursor::new(&mut buf[..]);
