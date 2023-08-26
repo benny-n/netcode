@@ -2,12 +2,7 @@ use netcode::{Client, Server, MAX_PACKET_SIZE};
 
 fn main() {
     // Start the server
-    let mut server = Server::new(
-        "127.0.0.1:12345",
-        0x11223344,
-        Some([0u8; 32]), // TODO: generate a real private key
-    )
-    .unwrap();
+    let mut server = Server::new("127.0.0.1:12345", 0x11223344, netcode::generate_key()).unwrap();
 
     // Generate a connection token for the client
     let token_bytes = server

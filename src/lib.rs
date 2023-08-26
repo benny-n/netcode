@@ -26,8 +26,8 @@
 //!
 //! // Create a server
 //! let protocol_id = 0x11223344;
-//! let private_key = [0u8; 32]; // TODO: generate a real private key with 'netcode::generate_key()'
-//! let mut server = Server::new("127.0.0.1:12345", protocol_id, Some(private_key)).unwrap();
+//! let private_key = netcode::generate_key(); // you can also provide your own key
+//! let mut server = Server::new("127.0.0.1:12345", protocol_id, private_key).unwrap();
 //!
 //!
 //! // Run the server at 60Hz
@@ -61,13 +61,11 @@
 //!
 //! // Generate a connection token for the client
 //! let protocol_id = 0x11223344;
-//! let private_key = [0u8; 32]; // TODO: generate a real private key with 'netcode::generate_key()'
-//! let nonce = 0; // starts at zero and should increase with each connect token generated
+//! let private_key = netcode::generate_key(); // you can also provide your own key
 //! let client_id = 123u64; // globally unique identifier for an authenticated client
 //! let server_address = "127.0.0.1:12345"; // the server's public address (can also be multiple addresses)
 //!
-//! let connect_token = ConnectToken::build("127.0.0.1:12345", protocol_id, client_id, nonce)
-//!     .private_key(private_key) // If not provided, a random key will be generated for you
+//! let connect_token = ConnectToken::build("127.0.0.1:12345", protocol_id, client_id, private_key)
 //!     .generate()
 //!     .unwrap();
 //!
@@ -101,7 +99,7 @@ pub(crate) const PRIVATE_KEY_SIZE: usize = 32;
 
 // Re-exports
 pub use crate::client::{Client, ClientConfig, ClientState};
-pub use crate::crypto::{generate_key, Key};
+pub use crate::crypto::{generate_key, try_generate_key, Key};
 pub use crate::error::{Error, Result};
 pub use crate::server::{Server, ServerConfig};
 pub use crate::token::{ConnectToken, ConnectTokenBuilder, InvalidTokenError};

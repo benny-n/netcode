@@ -279,18 +279,18 @@ impl Bytes for ChallengeToken {
 ///
 /// // mandatory fields
 /// let server_address = "127.0.0.1:0"; // the server's public address (can also be multiple addresses)
+/// let private_key = netcode::generate_key(); // 32-byte private key, used to encrypt the token
 /// let protocol_id = 0x11223344; // must match the server's protocol id - unique to your app/game
 /// let client_id = 123; // globally unique identifier for an authenticated client
-/// let nonce = 0; // starts at zero and should increase with each connect token generated
 ///
 /// // optional fields
-/// let private_key = netcode::generate_key().unwrap();
+/// let nonce = 0; // starts at zero and should increase with each connect token generated
 /// let expire_seconds = -1; // defaults to 30 seconds, negative for no expiry
 /// let timeout_seconds = -1; // defaults to 15 seconds, negative for no timeout
 /// let user_data = [0u8; 256]; // custom data
 ///
-/// let connect_token = ConnectToken::build(server_address, protocol_id, client_id, nonce)
-///     .private_key(private_key) // if not provided, a random key will be generated for you
+/// let connect_token = ConnectToken::build(server_address, protocol_id, client_id, private_key)
+///     .nonce(nonce)
 ///     .expire_seconds(expire_seconds)
 ///     .timeout_seconds(timeout_seconds)
 ///     .user_data(user_data)
@@ -321,34 +321,38 @@ pub struct ConnectTokenBuilder<A: ToSocketAddrs> {
     protocol_id: u64,
     client_id: u64,
     expire_seconds: i32,
+    private_key: Key,
     nonce: u64,
     timeout_seconds: i32,
     public_server_addresses: A,
     internal_server_addresses: Option<AddressList>,
-    private_key: Option<Key>,
     user_data: [u8; USER_DATA_SIZE],
 }
 
 impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
-    fn new(server_addresses: A, protocol_id: u64, client_id: u64, nonce: u64) -> Self {
+    fn new(server_addresses: A, protocol_id: u64, client_id: u64, private_key: Key) -> Self {
         Self {
             protocol_id,
             client_id,
             expire_seconds: TOKEN_EXPIRE_SEC,
-            nonce,
+            private_key,
+            nonce: 0,
             timeout_seconds: CONNECTION_TIMEOUT_SEC,
             public_server_addresses: server_addresses,
             internal_server_addresses: None,
-            private_key: None,
             user_data: [0; USER_DATA_SIZE],
         }
     }
     /// Sets the time in seconds that the token will be valid for.
+    ///
+    /// Negative values will disable expiry.
     pub fn expire_seconds(mut self, expire_seconds: i32) -> Self {
         self.expire_seconds = expire_seconds;
         self
     }
     /// Sets the time in seconds that a connection will be kept alive without any packets being received.
+    ///
+    /// Negative values will disable timeouts.
     pub fn timeout_seconds(mut self, timeout_seconds: i32) -> Self {
         self.timeout_seconds = timeout_seconds;
         self
@@ -358,9 +362,11 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
         self.user_data = user_data;
         self
     }
-    /// Sets the private key that will be used to encrypt the token.
-    pub fn private_key(mut self, private_key: Key) -> Self {
-        self.private_key = Some(private_key);
+    /// Sets the nonce that will be used to encrypt the token.
+    ///
+    /// The nonce should be incremented with each token generated.
+    pub fn nonce(mut self, nonce: u64) -> Self {
+        self.nonce = nonce;
         self
     }
     /// Sets the **internal** server addresses in the private data of the token. <br>
@@ -390,12 +396,8 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
             Some(addresses) => addresses,
             None => public_server_addresses,
         };
-        let private_key = match self.private_key {
-            Some(key) => key,
-            None => crypto::generate_key()?,
-        };
-        let client_to_server_key = crypto::generate_key()?;
-        let server_to_client_key = crypto::generate_key()?;
+        let client_to_server_key = crypto::generate_key();
+        let server_to_client_key = crypto::generate_key();
 
         let private_data = ConnectTokenPrivate {
             client_id: self.client_id,
@@ -405,7 +407,12 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
             server_to_client_key,
             user_data: self.user_data,
         }
-        .encrypt(self.protocol_id, expire_timestamp, self.nonce, &private_key)?;
+        .encrypt(
+            self.protocol_id,
+            expire_timestamp,
+            self.nonce,
+            &self.private_key,
+        )?;
 
         Ok(ConnectToken {
             version_info: *NETCODE_VERSION,
@@ -428,9 +435,9 @@ impl ConnectToken {
         server_addresses: A,
         protocol_id: u64,
         client_id: u64,
-        nonce: u64,
+        private_key: Key,
     ) -> ConnectTokenBuilder<A> {
-        ConnectTokenBuilder::new(server_addresses, protocol_id, client_id, nonce)
+        ConnectTokenBuilder::new(server_addresses, protocol_id, client_id, private_key)
     }
 
     /// Tries to convert the token into a 2048-byte array.
@@ -516,7 +523,7 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_private_token() {
-        let private_key = crypto::generate_key().unwrap();
+        let private_key = crypto::generate_key();
         let protocol_id = 1;
         let expire_timestamp = 2;
         let nonce = 3;
@@ -538,8 +545,8 @@ mod tests {
             timeout_seconds,
             server_addresses,
             user_data,
-            client_to_server_key: crypto::generate_key().unwrap(),
-            server_to_client_key: crypto::generate_key().unwrap(),
+            client_to_server_key: crypto::generate_key(),
+            server_to_client_key: crypto::generate_key(),
         };
 
         let mut encrypted = private_token
@@ -577,7 +584,7 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_challenge_token() {
-        let private_key = crypto::generate_key().unwrap();
+        let private_key = crypto::generate_key();
         let sequence = 1;
         let client_id = 2;
         let user_data = [0x11; USER_DATA_SIZE];
@@ -598,7 +605,7 @@ mod tests {
 
     #[test]
     fn connect_token_read_write() {
-        let private_key = crypto::generate_key().unwrap();
+        let private_key = crypto::generate_key();
         let protocol_id = 1;
         let expire_timestamp = 2;
         let nonce = 3;
@@ -620,8 +627,8 @@ mod tests {
             timeout_seconds,
             server_addresses,
             user_data,
-            client_to_server_key: crypto::generate_key().unwrap(),
-            server_to_client_key: crypto::generate_key().unwrap(),
+            client_to_server_key: crypto::generate_key(),
+            server_to_client_key: crypto::generate_key(),
         };
 
         let mut encrypted = private_token
@@ -682,15 +689,20 @@ mod tests {
         let client_id = 4;
         let server_addresses = "127.0.0.1:12345";
 
-        let connect_token = ConnectToken::build(server_addresses, protocol_id, client_id, nonce)
-            .private_key([0x42; PRIVATE_KEY_SIZE])
-            .user_data([0x11; USER_DATA_SIZE])
-            .timeout_seconds(5)
-            .expire_seconds(6)
-            .internal_address_list("0.0.0.0:0")
-            .expect("failed to parse address")
-            .generate()
-            .unwrap();
+        let connect_token = ConnectToken::build(
+            server_addresses,
+            protocol_id,
+            client_id,
+            [0x42; PRIVATE_KEY_SIZE],
+        )
+        .nonce(nonce)
+        .user_data([0x11; USER_DATA_SIZE])
+        .timeout_seconds(5)
+        .expire_seconds(6)
+        .internal_address_list("0.0.0.0:0")
+        .expect("failed to parse address")
+        .generate()
+        .unwrap();
 
         assert_eq!(connect_token.version_info, *NETCODE_VERSION);
         assert_eq!(connect_token.protocol_id, protocol_id);

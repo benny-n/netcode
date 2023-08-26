@@ -12,14 +12,14 @@ fn main() {
         .filter(None, log::LevelFilter::Info)
         .init();
 
-    let my_secret_private_key = [0u8; 32]; // TODO: generate a real private key
+    let my_secret_private_key = netcode::generate_key();
     let cfg = ServerConfig::with_context(42).on_connect(|client_idx, _| {
         log::info!("`on_connect` callback called for client {}", client_idx);
     });
     let mut server = Server::with_config(
         "127.0.0.1:12345".parse().unwrap(),
         0x11223344,
-        Some(my_secret_private_key),
+        my_secret_private_key,
         cfg,
     )
     .unwrap();

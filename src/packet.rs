@@ -504,8 +504,8 @@ mod tests {
         let timeout_seconds = -1;
         let server_addresses = AddressList::new("127.0.0.1:40000").unwrap();
         let user_data = [0u8; USER_DATA_SIZE];
-        let private_key = generate_key().unwrap();
-        let packet_key = generate_key().unwrap();
+        let private_key = generate_key();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let expire_timestamp = u64::MAX;
         let sequence = 0u64;
@@ -515,8 +515,8 @@ mod tests {
             timeout_seconds,
             server_addresses,
             user_data,
-            client_to_server_key: generate_key().unwrap(),
-            server_to_client_key: generate_key().unwrap(),
+            client_to_server_key: generate_key(),
+            server_to_client_key: generate_key(),
         };
 
         let token_data = token_data
@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn denied_packet() {
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     pub fn challenge_packet() {
         let token = [0u8; ChallengeToken::SIZE];
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();
@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     pub fn keep_alive_packet() {
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let client_index = 0;
@@ -670,7 +670,7 @@ mod tests {
 
     #[test]
     pub fn disconnect_packet() {
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();
@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     pub fn payload_packet() {
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();

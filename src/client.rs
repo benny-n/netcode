@@ -29,8 +29,8 @@ type Callback<Ctx> =
 /// # struct MyContext;
 /// # use netcode::Server;
 /// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
-/// # let private_key = [42u8; 32];
-/// # let token = Server::new(addr, 0x11223344, Some(private_key)).unwrap().token(123u64).generate().unwrap();
+/// # let private_key = netcode::generate_key();
+/// # let token = Server::new(addr, 0x11223344, private_key).unwrap().token(123u64).generate().unwrap();
 /// # let token_bytes = token.try_into_bytes().unwrap();
 /// use netcode::{Client, ClientConfig, ClientState};
 ///
@@ -199,7 +199,12 @@ impl Client<NetcodeSocket> {
     /// ```
     /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
     /// // Generate a connection token for the client
-    /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, 0).generate().unwrap().try_into_bytes().unwrap();
+    /// let private_key = netcode::generate_key();
+    /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, private_key)
+    ///     .generate()
+    ///     .unwrap()
+    ///     .try_into_bytes()
+    ///     .unwrap();
     ///
     /// // Start the client
     /// let mut client = Client::new(&token_bytes).unwrap();
@@ -226,7 +231,12 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
     /// # struct MyContext;
     /// // Generate a connection token for the client
-    /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, 0).generate().unwrap().try_into_bytes().unwrap();
+    /// let private_key = netcode::generate_key();
+    /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, private_key)
+    ///     .generate()
+    ///     .unwrap()
+    ///     .try_into_bytes()
+    ///     .unwrap();
     ///
     /// // Create a client configuration with a context
     /// let cfg = ClientConfig::with_context(MyContext {}).on_state_change(|from, to, _ctx| {

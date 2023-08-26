@@ -8,7 +8,6 @@ use std::io;
 use crate::{MAC_SIZE, PRIVATE_KEY_SIZE};
 
 #[derive(thiserror::Error, Debug)]
-#[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -23,18 +22,35 @@ pub enum Error {
 pub type Key = [u8; crate::PRIVATE_KEY_SIZE];
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Generates a random key for use with the netcode protocol.
+/// Generates a random key for encrypting and decrypting packets and connect tokens.
 ///
-/// Returns an error if the underlying RNG fails (highly unlikely).
+/// Panics if the underlying RNG fails (highly unlikely). <br>
+/// For a non-panicking version, see [`try_generate_key`](fn.try_generate_key.html).
 ///
-/// # Examples
+/// # Example
 /// ```
 /// use netcode::generate_key;
 ///
-/// let key = generate_key().unwrap();
+/// let key = generate_key();
 /// assert_eq!(key.len(), 32);
 /// ```
-pub fn generate_key() -> Result<Key> {
+pub fn generate_key() -> Key {
+    let mut key: Key = [0; PRIVATE_KEY_SIZE];
+    OsRng.fill_bytes(&mut key);
+    key
+}
+/// Generates a random key for encrypting and decrypting packets and connect tokens.
+///
+/// Returns an error if the underlying RNG fails (highly unlikely).
+///
+/// # Example
+/// ```
+/// use netcode::try_generate_key;
+///
+/// let key = try_generate_key().unwrap();
+/// assert_eq!(key.len(), 32);
+/// ```
+pub fn try_generate_key() -> Result<Key> {
     let mut key: Key = [0; PRIVATE_KEY_SIZE];
     OsRng.try_fill_bytes(&mut key).map_err(Error::GenerateKey)?;
     Ok(key)
@@ -92,7 +108,7 @@ mod tests {
     fn buf_too_small() {
         let mut buffer = [0; 0];
         let nonce = 0;
-        let key = generate_key().unwrap();
+        let key = generate_key();
         let result = encrypt(&mut buffer, None, nonce, &key);
         assert!(result.is_err());
     }
@@ -101,7 +117,7 @@ mod tests {
     fn encrypt_decrypt_zero_sized_buffer() {
         let mut buffer = [0u8; MAC_SIZE]; // 16 bytes is the minimum size, which our actual buffer is empty
         let nonce = 0;
-        let key = generate_key().unwrap();
+        let key = generate_key();
         encrypt(&mut buffer, None, nonce, &key).unwrap();
 
         // The buffer should have been modified

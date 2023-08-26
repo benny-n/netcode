@@ -102,9 +102,7 @@ impl Connection {
 /// Note that this is not the same as the [`ClientIndex`](ClientIndex), which is used by the server to identify clients.
 pub type ClientId = u64;
 
-/// A thin wrapper around `usize` used by the server to identify clients.
-///
-/// This is used instead of `usize` to make it harder to accidentally use a client id as a client index, or mix between other `usize` values.
+/// A newtype over `usize` used by the server to identify clients.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ClientIndex(pub(crate) usize);
 
@@ -255,7 +253,7 @@ type Callback<Ctx> = Box<dyn FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync 
 ///         println!("client {} connected, counter: {idx}", counter);
 ///     }
 /// });
-/// let server = Server::with_config(addr, protocol_id, Some(private_key), cfg).unwrap();
+/// let server = Server::with_config(addr, protocol_id, private_key, cfg).unwrap();
 /// ```
 pub struct ServerConfig<Ctx> {
     num_disconnect_packets: usize,
@@ -339,35 +337,35 @@ pub struct Server<T: Transceiver, Ctx = ()> {
 }
 
 impl Server<NetcodeSocket> {
-    /// Create a new, stateless server a default configuration.
+    /// Create a new server with a default configuration.
     ///
-    /// For a stateful server, use [`Server::with_config`](Server::with_config) and provide a state in the [`ServerConfig`](ServerConfig).
+    /// For a custom configuration, use [`Server::with_config`](Server::with_config) instead.
     ///
     /// # Example
     /// ```
     /// use netcode::Server;
     /// use std::net::{SocketAddr, Ipv4Addr};
     ///
-    /// let private_key = [42u8; 32]; // TODO: generate a real private key
+    /// let private_key = netcode::generate_key();
     /// let protocol_id = 0x123456789ABCDEF0;
     /// let addr = "127.0.0.1:41234";
-    /// let server = Server::new(addr, protocol_id, Some(private_key)).unwrap();
+    /// let server = Server::new(addr, protocol_id, private_key).unwrap();
     /// ```
     pub fn new(
         bind_addr: impl ToSocketAddrs,
         protocol_id: u64,
-        private_key: Option<Key>,
+        private_key: Key,
     ) -> Result<Server<NetcodeSocket, ()>> {
         let server: Server<_, ()> = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
             time: 0.0,
-            private_key: private_key.unwrap_or(crypto::generate_key()?),
+            private_key,
             max_clients: MAX_CLIENTS,
             protocol_id,
             sequence: 1 << 63,
             token_sequence: 0,
             challenge_sequence: 0,
-            challenge_key: crypto::generate_key()?,
+            challenge_key: crypto::generate_key(),
             conn_cache: ConnectionCache::new(0.0),
             token_entries: TokenEntries::new(),
             cfg: ServerConfig::default(),
@@ -387,7 +385,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
     /// use netcode::{Server, ServerConfig};
     /// use std::net::{SocketAddr, Ipv4Addr};
     ///
-    /// let private_key = [42u8; 32]; // TODO: generate a real private key
+    /// let private_key = netcode::generate_key();
     /// let protocol_id = 0x123456789ABCDEF0;
     /// let addr = "127.0.0.1:40000".parse().unwrap();
     /// let cfg = ServerConfig::with_context(42).on_connect(|idx, ctx| {
@@ -395,24 +393,24 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
     ///         assert_eq!(*ctx, 42);
     ///     }
     /// });
-    /// let server = Server::with_config(addr, protocol_id, Some(private_key), cfg).unwrap();
+    /// let server = Server::with_config(addr, protocol_id, private_key, cfg).unwrap();
     /// ```
     pub fn with_config(
         bind_addr: SocketAddr,
         protocol_id: u64,
-        private_key: Option<Key>,
+        private_key: Key,
         cfg: ServerConfig<Ctx>,
     ) -> Result<Self> {
         let server = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
             time: 0.0,
-            private_key: private_key.unwrap_or(crypto::generate_key()?),
+            private_key,
             max_clients: MAX_CLIENTS,
             protocol_id,
             sequence: 1 << 63,
             token_sequence: 0,
             challenge_sequence: 0,
-            challenge_key: crypto::generate_key()?,
+            challenge_key: crypto::generate_key(),
             conn_cache: ConnectionCache::new(0.0),
             token_entries: TokenEntries::new(),
             cfg,
@@ -704,15 +702,15 @@ impl<T: Transceiver, S> Server<T, S> {
     /// # use netcode::{Server, ServerConfig};
     /// # use std::net::{SocketAddr, Ipv4Addr};
     ///  
-    /// let private_key = Some([42u8; 32]); // TODO: generate a real private key
+    /// let private_key = netcode::generate_key();
     /// let protocol_id = 0x123456789ABCDEF0;
     /// let bind_addr = "0.0.0.0:0";
     /// let mut server = Server::new(bind_addr, protocol_id, private_key).unwrap();
     ///
     /// let client_id = 123u64;
     /// let token = server.token(client_id)
-    ///     .expire_seconds(60)  // optional - default is 30 seconds. negative values would make the token never expire.
-    ///     .timeout_seconds(-1) // optional - default is 15 seconds. negative values would make the token never timeout.
+    ///     .expire_seconds(60)  // defaults to 30 seconds, negative for no expiry
+    ///     .timeout_seconds(-1) // defaults to 15 seconds, negative for no timeout
     ///     .generate()
     ///     .unwrap();
     /// ```
@@ -723,9 +721,9 @@ impl<T: Transceiver, S> Server<T, S> {
             self.transceiver.addr(),
             self.protocol_id,
             client_id,
-            self.token_sequence,
+            self.private_key,
         )
-        .private_key(self.private_key);
+        .nonce(self.token_sequence);
         self.token_sequence += 1;
         token_builder
     }
@@ -843,13 +841,13 @@ pub mod tests {
             let server = Server {
                 transceiver: sim,
                 time,
-                private_key: private_key.unwrap_or(crypto::generate_key()?),
+                private_key: private_key.unwrap_or(crypto::generate_key()),
                 max_clients: MAX_CLIENTS,
                 protocol_id: 0,
                 sequence: 1 << 63,
                 token_sequence: 0,
                 challenge_sequence: 0,
-                challenge_key: crypto::generate_key()?,
+                challenge_key: crypto::generate_key(),
                 conn_cache: ConnectionCache::new(time),
                 token_entries: TokenEntries::new(),
                 cfg: ServerConfig::default(),

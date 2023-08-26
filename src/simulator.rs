@@ -128,6 +128,7 @@ impl Transceiver for NetworkSimulator {
 mod tests {
     use crate::{
         client::{Client, ClientState},
+        server::ClientIndex,
         token::ConnectToken,
         CONNECTION_TIMEOUT_SEC,
     };
@@ -199,6 +200,7 @@ mod tests {
             server.update(time).unwrap();
             let mut buf = [0; 1175];
             if let Ok(Some((size, client_idx))) = server.recv(&mut buf) {
+                assert_eq!(client_idx, ClientIndex(0));
                 payload = buf[..size].to_vec();
                 payload.push(payload.last().unwrap() + 1);
                 server.send(&payload, client_idx).unwrap();
@@ -453,8 +455,7 @@ mod tests {
         let mut server1 = Server::with_simulator(server1_sim, Some(private_key)).unwrap();
         let mut server2 = Server::with_simulator(server2_sim, Some(private_key)).unwrap();
 
-        let token = ConnectToken::build(&[server1.addr(), server2.addr()][..], 0, 0, 0)
-            .private_key(private_key)
+        let token = ConnectToken::build(&[server1.addr(), server2.addr()][..], 0, 0, private_key)
             .generate()
             .unwrap();
 
