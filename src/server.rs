@@ -318,7 +318,7 @@ impl<Ctx> ServerConfig<Ctx> {
 /// The `netcode` server.
 ///
 /// Responsible for accepting connections from clients and communicating with them using the netcode protocol. <br>
-/// The server should be run in a loop to process incoming data, send updates to clients, and maintain stable connections.
+/// The server should be run in a loop to process incoming packets, send updates to clients, and maintain stable connections.
 ///
 /// # Example
 ///
@@ -729,26 +729,7 @@ impl<T: Transceiver, S> Server<T, S> {
         self.token_sequence += 1;
         token_builder
     }
-    /// Updates the server state.
-    ///
-    /// This should be called regularly, preferably at a fixed interval.
-    ///
-    /// # Example
-    /// ```
-    /// # use netcode::{Server, ServerConfig};
-    /// # use std::net::{SocketAddr, Ipv4Addr};
-    /// # use std::time::Instant;
-    /// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40004));
-    /// # let protocol_id = 0x123456789ABCDEF0;
-    /// # let private_key = [42u8; 32];
-    /// # let mut server = Server::new(addr, protocol_id, private_key).unwrap();
-    /// let start = Instant::now();
-    /// loop {
-    ///    let now = start.elapsed().as_secs_f64();
-    ///    server.update(now);
-    ///    // ...
-    ///    # break;
-    /// }
+    /// Updates the server's internal state, checks for timeouts, and sends keep alive packets to clients.
     pub fn update(&mut self, time: f64) {
         self.time = time;
         self.conn_cache.update(self.time);

@@ -124,18 +124,57 @@ impl<Ctx> ClientConfig<Ctx> {
 ///    before transitioning to `Disconnected`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ClientState {
+    /// The connect token has expired.
     ConnectTokenExpired,
+    /// The client has timed out while trying to connect to the server,
+    /// or while connected to the server due to a lack of packets received/sent.
     ConnectionTimedOut,
+    /// The client has timed out while waiting for a response from the server after sending a connection request packet.
     ConnectionRequestTimedOut,
+    /// The client has timed out while waiting for a response from the server after sending a challenge response packet.
     ChallengeResponseTimedOut,
+    /// The server has denied the client's connection request, most likely due to the server being full.
     ConnectionDenied,
+    /// The client is disconnected from the server.
     Disconnected,
+    /// The client is waiting for a response from the server after sending a connection request packet.
     SendingConnectionRequest,
+    /// The client is waiting for a response from the server after sending a challenge response packet.
     SendingChallengeResponse,
+    /// The client is connected to the server.
     Connected,
 }
 
-// TODO: document
+/// The `netcode` client.
+///
+/// To create a client one should obtain a connection token from a web backend (by REST API or other means). <br>
+/// The client will use this token to connect to the dedicated `netcode` server.
+///
+/// While the client is connected, it can send and receive packets to and from the server. <br>
+/// Similarly to the server, the client should be updated at a fixed rate (e.g., 60Hz) to process incoming packets and send outgoing packets. <br>
+///
+/// # Example
+/// ```
+/// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
+/// # use std::time::{Instant, Duration};
+/// # use std::thread;
+/// # let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, [0; 32]).generate().unwrap().try_into_bytes().unwrap();
+/// let mut client = Client::new(&token_bytes).unwrap();
+/// client.connect();
+///
+/// let start = Instant::now();
+/// let tick_rate = 1.0 / 60.0;
+/// loop {
+///     client.update(start.elapsed().as_secs_f64());
+///     let mut packet = [0; netcode::MAX_PACKET_SIZE];
+///     let _received = client.recv(&mut packet).unwrap();
+///     if client.is_connected() {
+///         client.send(b"Hello World!").unwrap();
+///     }
+///     thread::sleep(Duration::from_secs_f64(tick_rate));
+///     # break;
+/// }
+/// ```
 pub struct Client<T: Transceiver, Ctx = ()> {
     transceiver: T,
     state: ClientState,
@@ -283,7 +322,6 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.replay_protection = ReplayProtection::new();
     }
     fn reset(&mut self, new_state: ClientState) {
-        assert_ne!(self.state, new_state); // TODO: remove later
         self.sequence = 0;
         self.client_index = 0;
         self.max_clients = 0;
@@ -388,7 +426,9 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.last_receive_time = self.time;
         Ok(())
     }
-    // TODO: document
+    /// Disconnects the client from the server.
+    ///
+    /// The client will send a number of redundant disconnect packets to the server before transitioning to `Disconnected`.
     pub fn disconnect(&mut self) -> Result<()> {
         log::debug!(
             "client sending {} disconnect packets to server",
@@ -397,9 +437,12 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         for _ in 0..self.cfg.num_disconnect_packets {
             self.send_packet(DisconnectPacket::create())?;
         }
+        self.reset(ClientState::Disconnected);
         Ok(())
     }
-    // TODO: document
+    /// Connects the client to the server.
+    ///
+    /// This function does not perform any IO, it only readies the client to send/receive packets on the next call to [`update`](Client::update). <br>
     pub fn connect(&mut self) {
         self.reset_connection();
         self.set_state(ClientState::SendingConnectionRequest);
@@ -433,7 +476,32 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
     pub fn is_connected(&self) -> bool {
         matches!(self.state, ClientState::Connected)
     }
-    // TODO: document
+    /// Receives a packet from the server.
+    ///
+    /// The packet payload will be written to the provided buffer, and the size of the payload will be returned.
+    /// If an empty packet or a non-payload packet is received, the function will return `Ok(0)`.
+    ///
+    /// # Example
+    /// ```
+    /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
+    /// # use std::time::{Instant, Duration};
+    /// # use std::thread;
+    /// # let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, [0; 32]).generate().unwrap().try_into_bytes().unwrap();
+    /// let mut client = Client::new(&token_bytes).unwrap();
+    /// client.connect();
+    ///
+    /// let start = Instant::now();
+    /// let tick_rate = 1.0 / 60.0;
+    /// loop {
+    ///     client.update(start.elapsed().as_secs_f64());
+    ///     let mut packet = [0; netcode::MAX_PACKET_SIZE];
+    ///     if let Ok(received) = client.recv(&mut packet) {
+    ///         let payload = &packet[..received];
+    ///         // ...
+    ///     }
+    ///     # break;
+    /// }
+    /// ```
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let Some((size, addr)) = self.transceiver.recv(buf).map_err(|e| e.into())? else {
@@ -470,7 +538,9 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.process_packet(addr, packet)?;
         Ok(size)
     }
-    // TODO: document
+    /// Sends a packet to the server.
+    ///
+    /// The provided buffer must be smaller than [`MAX_PACKET_SIZE`](crate::MAX_PACKET_SIZE).
     pub fn send(&mut self, buf: &[u8]) -> Result<()> {
         if self.state != ClientState::Connected {
             return Ok(());
@@ -481,7 +551,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.send_packet(PayloadPacket::create(buf))?;
         Ok(())
     }
-    // TODO: document
+    /// Updates the client state and sends/receives non-payload packets if necessary.
     pub fn update(&mut self, time: f64) {
         self.time = time;
         self.send_periodic_packets();
