@@ -21,7 +21,7 @@ fn main() {
 
     // Run the server and client in parallel
     let server_thread = std::thread::spawn(move || loop {
-        server.update(start.elapsed().as_secs_f64()).unwrap();
+        server.update(start.elapsed().as_secs_f64());
         let mut packet = [0; MAX_PACKET_SIZE];
         if let Ok(Some((received, _))) = server.recv(&mut packet) {
             println!("{}", std::str::from_utf8(&packet[..received]).unwrap());
@@ -30,7 +30,7 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_secs_f64(tick_rate_secs));
     });
     let client_thread = std::thread::spawn(move || loop {
-        client.update(start.elapsed().as_secs_f64()).unwrap();
+        client.update(start.elapsed().as_secs_f64());
         let mut packet = [0; MAX_PACKET_SIZE];
         let _received = client.recv(&mut packet).unwrap();
         if client.is_connected() {

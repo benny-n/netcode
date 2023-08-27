@@ -5,7 +5,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use netcode::{Client, ClientState, Server, ServerConfig};
+use netcode::{Client, ClientIndex, ClientState, Server, ServerConfig};
+
+enum Event {
+    Connected(ClientIndex),
+    Disconnected(ClientIndex),
+}
 
 fn main() {
     env_logger::Builder::new()
@@ -13,9 +18,14 @@ fn main() {
         .init();
 
     let my_secret_private_key = netcode::generate_key();
-    let cfg = ServerConfig::with_context(42).on_connect(|client_idx, _| {
-        log::info!("`on_connect` callback called for client {}", client_idx);
-    });
+    let (tx, rx) = mpsc::channel::<Event>();
+    let cfg = ServerConfig::with_context(tx.clone())
+        .on_connect(move |client_idx, tx| {
+            tx.send(Event::Connected(client_idx)).unwrap();
+        })
+        .on_disconnect(move |client_idx, tx| {
+            tx.send(Event::Disconnected(client_idx)).unwrap();
+        });
     let mut server = Server::with_config(
         "127.0.0.1:12345".parse().unwrap(),
         0x11223344,
@@ -38,15 +48,23 @@ fn main() {
 
     let server_thread = thread::spawn(move || loop {
         let now = start.elapsed().as_secs_f64();
-        server.update(now).unwrap();
+        server.update(now);
 
         let mut packet = [0; 1175];
         if let Ok(Some((received, client_idx))) = server.recv(&mut packet) {
-            println!(
-                "server received: {}",
-                std::str::from_utf8(&packet[..received]).unwrap()
-            );
+            let s = std::str::from_utf8(&packet[..received]).unwrap();
+            println!("server received: {s}",);
             server.send(&packet[..received], client_idx).unwrap();
+        }
+        match rx.try_recv() {
+            Ok(Event::Connected(idx)) => {
+                log::info!("client {idx} connected");
+            }
+            Ok(Event::Disconnected(idx)) => {
+                log::info!("client {idx} disconnected");
+                break;
+            }
+            Err(_) => continue,
         }
         thread::sleep(Duration::from_secs_f64(tick_rate));
     });
@@ -57,7 +75,7 @@ fn main() {
     let (tx, rx) = mpsc::channel::<String>();
     let client_thread = thread::spawn(move || loop {
         let now = start.elapsed().as_secs_f64();
-        client.update(now).unwrap();
+        client.update(now);
 
         let mut packet = [0; 1175];
         let received = client.recv(&mut packet).unwrap();
@@ -69,6 +87,10 @@ fn main() {
         }
         if let ClientState::Connected = client.state() {
             match rx.recv_timeout(Duration::from_secs_f64(tick_rate)) {
+                Ok(msg) if msg == "dc" => {
+                    client.disconnect().unwrap();
+                    break;
+                }
                 Ok(msg) => {
                     if !msg.is_empty() {
                         client.send(msg.as_bytes()).unwrap();
@@ -84,6 +106,9 @@ fn main() {
     for line in io::stdin().lock().lines() {
         let input = line.unwrap();
         tx.send(input.clone()).unwrap();
+        if input == "dc" {
+            break;
+        }
     }
 
     client_thread.join().unwrap();
