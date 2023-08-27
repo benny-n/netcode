@@ -344,11 +344,8 @@ impl<'p> Packet<'p> {
         cursor.write_u8(prefix).unwrap();
         Ok(aead)
     }
-    pub fn get_prefix(first_byte: u8) -> (usize, PacketKind) {
-        ((first_byte >> 4) as usize, first_byte & 0xF)
-    }
-    pub fn is_connection_request(first_byte: u8) -> bool {
-        first_byte == Packet::REQUEST
+    pub fn get_prefix(prefix_byte: u8) -> (usize, PacketKind) {
+        ((prefix_byte >> 4) as usize, prefix_byte & 0xF)
     }
     pub fn write(
         &self,

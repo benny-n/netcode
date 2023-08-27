@@ -3,8 +3,8 @@
 //! The `netcode` crate implements the [netcode](https://github.com/networkprotocol/netcode)
 //! network protocol created by [Glenn Fiedler](https://gafferongames.com) for multiplayer games.
 //!
-//! Being a thin wrapper over UDP sockets, `netcode` is offering a seemingly general purpose connection-based secure data transfer.
-//! However, its core design and feature set are tailored specifically to meet the demands of multiplayer games networking.
+//! ~~Being a thin wrapper over UDP sockets, `netcode` is offering a seemingly general purpose connection-based secure data transfer.~~
+//! ~~However, its core design and feature set are tailored specifically to meet the demands of multiplayer games networking.~~
 //!
 //! ## Server
 //!
@@ -110,5 +110,5 @@ pub use crate::token::{ConnectToken, ConnectTokenBuilder, InvalidTokenError};
 pub const USER_DATA_SIZE: usize = 256;
 /// The maximum size of a packet in bytes.
 pub const MAX_PACKET_SIZE: usize = 1200;
-/// The version of the netcode protocol implemented by this crate as a null-terminated byte-array.
+/// The version of the netcode protocol implemented by this crate.
 pub const NETCODE_VERSION: &[u8; 13] = b"NETCODE 1.01\0";

@@ -39,7 +39,7 @@ pub fn generate_key() -> Key {
     OsRng.fill_bytes(&mut key);
     key
 }
-/// Generates a random key for encrypting and decrypting packets and connect tokens.
+/// The fallible version of [`generate_key`](fn.generate_key.html).
 ///
 /// Returns an error if the underlying RNG fails (highly unlikely).
 ///

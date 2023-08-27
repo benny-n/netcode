@@ -627,8 +627,6 @@ impl<T: Transceiver, S> Server<T, S> {
             return Ok(());
         };
         client.connect();
-        client.expire_time = -1.0; // TODO: check if this is correct
-        client.sequence = 0;
         client.last_send_time = self.time;
         client.last_receive_time = self.time;
         log::debug!(
@@ -643,7 +641,7 @@ impl<T: Transceiver, S> Server<T, S> {
         self.on_connect(idx);
         Ok(())
     }
-    fn check_for_timeouts(&mut self) -> Result<()> {
+    fn check_for_timeouts(&mut self) {
         for idx in 0..MAX_CLIENTS {
             let Some(client) = self.conn_cache.clients.get_mut(idx) else {
                 continue;
@@ -660,7 +658,6 @@ impl<T: Transceiver, S> Server<T, S> {
                 self.conn_cache.remove(idx);
             }
         }
-        Ok(())
     }
     fn send_keep_alive_packets(&mut self) -> Result<()> {
         for idx in 0..MAX_CLIENTS {
@@ -722,7 +719,7 @@ impl<T: Transceiver, S> Server<T, S> {
     pub fn update(&mut self, time: f64) -> Result<()> {
         self.time = time;
         self.conn_cache.update(self.time);
-        self.check_for_timeouts()?;
+        self.check_for_timeouts();
         self.send_keep_alive_packets()?;
         Ok(())
     }
@@ -739,7 +736,7 @@ impl<T: Transceiver, S> Server<T, S> {
         let (key, replay_protection) = match self.conn_cache.find_by_addr(&addr) {
             // Regardless of whether an entry in the connection cache exists for the client or not,
             // if the packet is a connection request we need to use the server's private key to decrypt it.
-            _ if Packet::is_connection_request(buf[0]) => (self.private_key, None),
+            _ if buf[0] == Packet::REQUEST => (self.private_key, None),
             Some(client_idx) => (
                 // If the packet is not a connection request, use the receive key to decrypt it.
                 self.conn_cache.clients[client_idx.0].receive_key,
@@ -819,6 +816,9 @@ impl<T: Transceiver, S> Server<T, S> {
             .clients
             .get(client_idx.0)
             .map(|c| c.client_id)
+    }
+    pub fn client_addr(&self, client_idx: ClientIndex) -> Option<SocketAddr> {
+        self.conn_cache.clients.get(client_idx.0).map(|c| c.addr)
     }
 }
 
