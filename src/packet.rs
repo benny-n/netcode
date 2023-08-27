@@ -7,14 +7,15 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{
     bytes::Bytes,
-    consts::{MAC_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION},
     crypto::{self, Key},
-    error::NetcodeError,
+    error::Error as NetcodeError,
     replay::ReplayProtection,
     token::{ChallengeToken, ConnectTokenPrivate},
+    MAC_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION,
 };
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error("packet type {0} is invalid")]
     InvalidType(u8),
@@ -121,7 +122,8 @@ impl RequestPacket {
 }
 
 impl Bytes for RequestPacket {
-    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         writer.write_all(&self.version_info)?;
         writer.write_u64::<LittleEndian>(self.protocol_id)?;
         writer.write_u64::<LittleEndian>(self.expire_timestamp)?;
@@ -155,7 +157,8 @@ impl DeniedPacket {
     }
 }
 impl Bytes for DeniedPacket {
-    fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -178,7 +181,8 @@ impl ChallengePacket {
 }
 
 impl Bytes for ChallengePacket {
-    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         writer.write_u64::<LittleEndian>(self.sequence)?;
         writer.write_all(&self.token)?;
         Ok(())
@@ -205,7 +209,8 @@ impl ResponsePacket {
     }
 }
 impl Bytes for ResponsePacket {
-    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         writer.write_u64::<LittleEndian>(self.sequence)?;
         writer.write_all(&self.token)?;
         Ok(())
@@ -232,7 +237,8 @@ impl KeepAlivePacket {
     }
 }
 impl Bytes for KeepAlivePacket {
-    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         writer.write_i32::<LittleEndian>(self.client_index)?;
         writer.write_i32::<LittleEndian>(self.max_clients)?;
         Ok(())
@@ -264,7 +270,8 @@ impl DisconnectPacket {
     }
 }
 impl Bytes for DisconnectPacket {
-    fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), io::Error> {
+    type Error = io::Error;
+    fn write_to(&self, _writer: &mut impl WriteBytesExt) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -337,11 +344,8 @@ impl<'p> Packet<'p> {
         cursor.write_u8(prefix).unwrap();
         Ok(aead)
     }
-    pub fn get_prefix(first_byte: u8) -> (usize, PacketKind) {
-        ((first_byte >> 4) as usize, first_byte & 0xF)
-    }
-    pub fn is_connection_request(first_byte: u8) -> bool {
-        first_byte == Packet::REQUEST
+    pub fn get_prefix(prefix_byte: u8) -> (usize, PacketKind) {
+        ((prefix_byte >> 4) as usize, prefix_byte & 0xF)
     }
     pub fn write(
         &self,
@@ -466,11 +470,7 @@ pub fn sequence_len(sequence: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        consts::{MAX_PAYLOAD_SIZE, USER_DATA_SIZE},
-        crypto::generate_key,
-        token::AddressList,
-    };
+    use crate::{crypto::generate_key, token::AddressList, MAX_PACKET_SIZE, USER_DATA_SIZE};
 
     use super::*;
 
@@ -501,8 +501,8 @@ mod tests {
         let timeout_seconds = -1;
         let server_addresses = AddressList::new("127.0.0.1:40000").unwrap();
         let user_data = [0u8; USER_DATA_SIZE];
-        let private_key = generate_key().unwrap();
-        let packet_key = generate_key().unwrap();
+        let private_key = generate_key();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let expire_timestamp = u64::MAX;
         let sequence = 0u64;
@@ -512,8 +512,8 @@ mod tests {
             timeout_seconds,
             server_addresses,
             user_data,
-            client_to_server_key: generate_key().unwrap(),
-            server_to_client_key: generate_key().unwrap(),
+            client_to_server_key: generate_key(),
+            server_to_client_key: generate_key(),
         };
 
         let token_data = token_data
@@ -528,7 +528,7 @@ mod tests {
             token_data,
         });
 
-        let mut buf = [0u8; MAX_PAYLOAD_SIZE];
+        let mut buf = [0u8; MAX_PACKET_SIZE];
         let size = packet
             .write(&mut buf, sequence, &packet_key, protocol_id)
             .unwrap();
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn denied_packet() {
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     pub fn challenge_packet() {
         let token = [0u8; ChallengeToken::SIZE];
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     pub fn keep_alive_packet() {
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let client_index = 0;
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     pub fn disconnect_packet() {
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     pub fn payload_packet() {
-        let packet_key = generate_key().unwrap();
+        let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();
@@ -704,7 +704,7 @@ mod tests {
         let payload = vec![0u8; 100];
         let packet = Packet::Payload(PayloadPacket { buf: &payload });
 
-        let mut buf = [0u8; MAX_PAYLOAD_SIZE];
+        let mut buf = [0u8; MAX_PACKET_SIZE];
         let size = packet
             .write(&mut buf, sequence, &packet_key, protocol_id)
             .unwrap();

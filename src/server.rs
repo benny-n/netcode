@@ -2,21 +2,23 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::bytes::Bytes;
-use crate::consts::{MAC_SIZE, MAX_CLIENTS, MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE};
-use crate::crypto::{self, Key};
-use crate::error::NetcodeError;
-use crate::free_list::FreeList;
-use crate::packet::{
-    ChallengePacket, DeniedPacket, DisconnectPacket, KeepAlivePacket, Packet, PayloadPacket,
-    RequestPacket, ResponsePacket,
+use crate::{
+    bytes::Bytes,
+    crypto::{self, Key},
+    error::{Error, Result},
+    free_list::FreeList,
+    packet::{
+        ChallengePacket, DeniedPacket, DisconnectPacket, KeepAlivePacket, Packet, PayloadPacket,
+        RequestPacket, ResponsePacket,
+    },
+    replay::ReplayProtection,
+    socket::NetcodeSocket,
+    token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate},
+    transceiver::Transceiver,
+    MAC_SIZE, MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
 };
-use crate::replay::ReplayProtection;
-use crate::socket::NetcodeSocket;
-use crate::token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate};
-use crate::transceiver::Transceiver;
 
-type Result<T> = std::result::Result<T, NetcodeError>;
+const MAX_CLIENTS: usize = 256;
 
 #[derive(Clone, Copy)]
 struct TokenEntry {
@@ -100,9 +102,7 @@ impl Connection {
 /// Note that this is not the same as the [`ClientIndex`](ClientIndex), which is used by the server to identify clients.
 pub type ClientId = u64;
 
-/// A thin wrapper around `usize` used by the server to identify clients.
-///
-/// This is used instead of `usize` to make it harder to accidentally use a client id as a client index, or mix between other `usize` values.
+/// A newtype over `usize` used by the server to identify clients.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ClientIndex(pub(crate) usize);
 
@@ -235,7 +235,7 @@ type Callback<Ctx> = Box<dyn FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync 
 /// # let protocol_id = 0x123456789ABCDEF0;
 /// # let private_key = [42u8; 32];
 /// use std::sync::{Arc, Mutex};
-/// use netcode::server::{Server, ServerConfig};
+/// use netcode::{Server, ServerConfig};
 ///
 /// let thread_safe_counter = Arc::new(Mutex::new(0));
 /// let cfg = ServerConfig::with_context(thread_safe_counter).on_connect(|idx, ctx| {
@@ -245,7 +245,7 @@ type Callback<Ctx> = Box<dyn FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync 
 ///         println!("client {} connected, counter: {idx}", counter);
 ///     }
 /// });
-/// let server = Server::with_config(addr, protocol_id, Some(private_key), cfg).unwrap();
+/// let server = Server::with_config(addr, protocol_id, private_key, cfg).unwrap();
 /// ```
 pub struct ServerConfig<Ctx> {
     num_disconnect_packets: usize,
@@ -258,7 +258,7 @@ impl<Ctx> Default for ServerConfig<Ctx> {
     fn default() -> Self {
         Self {
             num_disconnect_packets: 10,
-            keep_alive_send_rate: PACKET_SEND_RATE,
+            keep_alive_send_rate: PACKET_SEND_RATE_SEC,
             context: None,
             on_connect: None,
             on_disconnect: None,
@@ -267,11 +267,11 @@ impl<Ctx> Default for ServerConfig<Ctx> {
 }
 
 impl<Ctx> ServerConfig<Ctx> {
-    /// Create a new, default server configuration.
+    /// Create a new, default server configuration with no context.
     pub fn new() -> ServerConfig<()> {
         ServerConfig::<()>::default()
     }
-    /// Create a new server configuration with a state that will be passed to the callbacks.
+    /// Create a new server configuration with context that will be passed to the callbacks.
     pub fn with_context(ctx: Ctx) -> Self {
         Self {
             context: Some(Box::new(ctx)),
@@ -284,10 +284,10 @@ impl<Ctx> ServerConfig<Ctx> {
         self.num_disconnect_packets = num;
         self
     }
-    /// Set the rate at which keep alive packets will be sent to clients. <br>
-    /// The default is 10 packets per second.
-    pub fn keep_alive_send_rate(mut self, rate: f64) -> Self {
-        self.keep_alive_send_rate = rate;
+    /// Set the rate (in seconds) at which keep alive packets will be sent to clients. <br>
+    /// The default is 10 packets per second. (`0.1` seconds)
+    pub fn keep_alive_send_rate(mut self, rate_seconds: f64) -> Self {
+        self.keep_alive_send_rate = rate_seconds;
         self
     }
     /// Provide a callback that will be called when a client is connected to the server. <br>
@@ -329,35 +329,35 @@ pub struct Server<T: Transceiver, Ctx = ()> {
 }
 
 impl Server<NetcodeSocket> {
-    /// Create a new, stateless server a default configuration.
+    /// Create a new server with a default configuration.
     ///
-    /// For a stateful server, use [`Server::with_config`](Server::with_config) and provide a state in the [`ServerConfig`](ServerConfig).
+    /// For a custom configuration, use [`Server::with_config`](Server::with_config) instead.
     ///
     /// # Example
     /// ```
-    /// use netcode::server::Server;
+    /// use netcode::Server;
     /// use std::net::{SocketAddr, Ipv4Addr};
     ///
-    /// let private_key = [42u8; 32]; // TODO: generate a real private key
+    /// let private_key = netcode::generate_key();
     /// let protocol_id = 0x123456789ABCDEF0;
     /// let addr = "127.0.0.1:41234";
-    /// let server = Server::new(addr, protocol_id, Some(private_key)).unwrap();
+    /// let server = Server::new(addr, protocol_id, private_key).unwrap();
     /// ```
     pub fn new(
         bind_addr: impl ToSocketAddrs,
         protocol_id: u64,
-        private_key: Option<Key>,
+        private_key: Key,
     ) -> Result<Server<NetcodeSocket, ()>> {
         let server: Server<_, ()> = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
             time: 0.0,
-            private_key: private_key.unwrap_or(crypto::generate_key()?),
+            private_key,
             max_clients: MAX_CLIENTS,
             protocol_id,
             sequence: 1 << 63,
             token_sequence: 0,
             challenge_sequence: 0,
-            challenge_key: crypto::generate_key()?,
+            challenge_key: crypto::generate_key(),
             conn_cache: ConnectionCache::new(0.0),
             token_entries: TokenEntries::new(),
             cfg: ServerConfig::default(),
@@ -374,10 +374,10 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
     ///
     /// # Example
     /// ```
-    /// use netcode::server::{Server, ServerConfig};
+    /// use netcode::{Server, ServerConfig};
     /// use std::net::{SocketAddr, Ipv4Addr};
     ///
-    /// let private_key = [42u8; 32]; // TODO: generate a real private key
+    /// let private_key = netcode::generate_key();
     /// let protocol_id = 0x123456789ABCDEF0;
     /// let addr = "127.0.0.1:40000".parse().unwrap();
     /// let cfg = ServerConfig::with_context(42).on_connect(|idx, ctx| {
@@ -385,24 +385,24 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
     ///         assert_eq!(*ctx, 42);
     ///     }
     /// });
-    /// let server = Server::with_config(addr, protocol_id, Some(private_key), cfg).unwrap();
+    /// let server = Server::with_config(addr, protocol_id, private_key, cfg).unwrap();
     /// ```
     pub fn with_config(
         bind_addr: SocketAddr,
         protocol_id: u64,
-        private_key: Option<Key>,
+        private_key: Key,
         cfg: ServerConfig<Ctx>,
     ) -> Result<Self> {
         let server = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
             time: 0.0,
-            private_key: private_key.unwrap_or(crypto::generate_key()?),
+            private_key,
             max_clients: MAX_CLIENTS,
             protocol_id,
             sequence: 1 << 63,
             token_sequence: 0,
             challenge_sequence: 0,
-            challenge_key: crypto::generate_key()?,
+            challenge_key: crypto::generate_key(),
             conn_cache: ConnectionCache::new(0.0),
             token_entries: TokenEntries::new(),
             cfg,
@@ -462,7 +462,7 @@ impl<T: Transceiver, S> Server<T, S> {
                 }
                 Ok(())
             }
-            _ => Err(NetcodeError::InvalidPacket)?,
+            _ => unreachable!("packet should have been filtered out by `ALLOWED_PACKETS`"),
         }
     }
     fn send_to_addr(&mut self, packet: Packet, addr: SocketAddr, key: Key) -> Result<()> {
@@ -551,7 +551,7 @@ impl<T: Transceiver, S> Server<T, S> {
             addr: from_addr,
             mac: packet.token_data[ConnectTokenPrivate::SIZE - MAC_SIZE..ConnectTokenPrivate::SIZE]
                 .try_into()
-                .map_err(|_| NetcodeError::InvalidPacket)?,
+                .expect("valid MAC size"),
         };
         if !self.token_entries.find_or_insert(entry) {
             log::debug!("server ignored connection request. connect token has already been used");
@@ -627,8 +627,6 @@ impl<T: Transceiver, S> Server<T, S> {
             return Ok(());
         };
         client.connect();
-        client.expire_time = -1.0; // TODO: check if this is correct
-        client.sequence = 0;
         client.last_send_time = self.time;
         client.last_receive_time = self.time;
         log::debug!(
@@ -643,7 +641,7 @@ impl<T: Transceiver, S> Server<T, S> {
         self.on_connect(idx);
         Ok(())
     }
-    fn check_for_timeouts(&mut self) -> Result<()> {
+    fn check_for_timeouts(&mut self) {
         for idx in 0..MAX_CLIENTS {
             let Some(client) = self.conn_cache.clients.get_mut(idx) else {
                 continue;
@@ -660,7 +658,6 @@ impl<T: Transceiver, S> Server<T, S> {
                 self.conn_cache.remove(idx);
             }
         }
-        Ok(())
     }
     fn send_keep_alive_packets(&mut self) -> Result<()> {
         for idx in 0..MAX_CLIENTS {
@@ -691,18 +688,18 @@ impl<T: Transceiver, S> Server<T, S> {
     /// # Example
     ///
     /// ```
-    /// # use netcode::server::{Server, ServerConfig};
+    /// # use netcode::{Server, ServerConfig};
     /// # use std::net::{SocketAddr, Ipv4Addr};
     ///  
-    /// let private_key = Some([42u8; 32]); // TODO: generate a real private key
+    /// let private_key = netcode::generate_key();
     /// let protocol_id = 0x123456789ABCDEF0;
     /// let bind_addr = "0.0.0.0:0";
     /// let mut server = Server::new(bind_addr, protocol_id, private_key).unwrap();
     ///
     /// let client_id = 123u64;
     /// let token = server.token(client_id)
-    ///     .expire_seconds(60)  // optional - default is 30 seconds. negative values would make the token never expire.
-    ///     .timeout_seconds(-1) // optional - default is 15 seconds. negative values would make the token never timeout.
+    ///     .expire_seconds(60)  // defaults to 30 seconds, negative for no expiry
+    ///     .timeout_seconds(-1) // defaults to 15 seconds, negative for no timeout
     ///     .generate()
     ///     .unwrap();
     /// ```
@@ -713,16 +710,16 @@ impl<T: Transceiver, S> Server<T, S> {
             self.transceiver.addr(),
             self.protocol_id,
             client_id,
-            self.token_sequence,
+            self.private_key,
         )
-        .private_key(self.private_key);
+        .nonce(self.token_sequence);
         self.token_sequence += 1;
         token_builder
     }
     pub fn update(&mut self, time: f64) -> Result<()> {
         self.time = time;
         self.conn_cache.update(self.time);
-        self.check_for_timeouts()?;
+        self.check_for_timeouts();
         self.send_keep_alive_packets()?;
         Ok(())
     }
@@ -739,7 +736,7 @@ impl<T: Transceiver, S> Server<T, S> {
         let (key, replay_protection) = match self.conn_cache.find_by_addr(&addr) {
             // Regardless of whether an entry in the connection cache exists for the client or not,
             // if the packet is a connection request we need to use the server's private key to decrypt it.
-            _ if Packet::is_connection_request(buf[0]) => (self.private_key, None),
+            _ if buf[0] == Packet::REQUEST => (self.private_key, None),
             Some(client_idx) => (
                 // If the packet is not a connection request, use the receive key to decrypt it.
                 self.conn_cache.clients[client_idx.0].receive_key,
@@ -762,7 +759,7 @@ impl<T: Transceiver, S> Server<T, S> {
             Self::ALLOWED_PACKETS,
         ) {
             Ok(packet) => packet,
-            Err(NetcodeError::Crypto(_)) => {
+            Err(Error::Crypto(_)) => {
                 log::debug!("server ignored packet because it failed to decrypt");
                 return Ok(None);
             }
@@ -783,11 +780,11 @@ impl<T: Transceiver, S> Server<T, S> {
             .and_then(|idx| (size > 0).then_some((size, idx))))
     }
     pub fn send(&mut self, buf: &[u8], client_idx: ClientIndex) -> Result<()> {
-        if buf.len() > MAX_PAYLOAD_SIZE {
-            return Err(NetcodeError::PacketSizeExceeded(buf.len()));
+        if buf.len() > MAX_PACKET_SIZE {
+            return Err(Error::SizeMismatch(MAX_PACKET_SIZE, buf.len()));
         }
         let Some(conn) = self.conn_cache.clients.get_mut(client_idx.0) else {
-            return Err(NetcodeError::ClientNotFound);
+            return Err(Error::ClientNotFound);
         };
         if !conn.connected {
             // client is not yet connected, but this shouldn't be an error as the client may be sending a connection request
@@ -820,6 +817,9 @@ impl<T: Transceiver, S> Server<T, S> {
             .get(client_idx.0)
             .map(|c| c.client_id)
     }
+    pub fn client_addr(&self, client_idx: ClientIndex) -> Option<SocketAddr> {
+        self.conn_cache.clients.get(client_idx.0).map(|c| c.addr)
+    }
 }
 
 #[cfg(test)]
@@ -833,13 +833,13 @@ pub mod tests {
             let server = Server {
                 transceiver: sim,
                 time,
-                private_key: private_key.unwrap_or(crypto::generate_key()?),
+                private_key: private_key.unwrap_or(crypto::generate_key()),
                 max_clients: MAX_CLIENTS,
                 protocol_id: 0,
                 sequence: 1 << 63,
                 token_sequence: 0,
                 challenge_sequence: 0,
-                challenge_key: crypto::generate_key()?,
+                challenge_key: crypto::generate_key(),
                 conn_cache: ConnectionCache::new(time),
                 token_entries: TokenEntries::new(),
                 cfg: ServerConfig::default(),

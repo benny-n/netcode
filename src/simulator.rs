@@ -128,8 +128,9 @@ impl Transceiver for NetworkSimulator {
 mod tests {
     use crate::{
         client::{Client, ClientState},
-        consts::DEFAULT_CONNECTION_TIMEOUT_SECONDS,
+        server::ClientIndex,
         token::ConnectToken,
+        CONNECTION_TIMEOUT_SEC,
     };
 
     use super::*;
@@ -167,7 +168,7 @@ mod tests {
 
         let mut client = Client::with_simulator(token, client_sim).unwrap();
 
-        client.connect().unwrap();
+        client.connect();
 
         loop {
             client.update(time).unwrap();
@@ -199,6 +200,7 @@ mod tests {
             server.update(time).unwrap();
             let mut buf = [0; 1175];
             if let Ok(Some((size, client_idx))) = server.recv(&mut buf) {
+                assert_eq!(client_idx, ClientIndex(0));
                 payload = buf[..size].to_vec();
                 payload.push(payload.last().unwrap() + 1);
                 server.send(&payload, client_idx).unwrap();
@@ -230,7 +232,7 @@ mod tests {
 
         let mut client = Client::with_simulator(token, client_sim).unwrap();
 
-        client.connect().unwrap();
+        client.connect();
 
         // connect client
         loop {
@@ -250,8 +252,7 @@ mod tests {
         assert!(client.is_connected());
 
         // now don't update server for a while and ensure client times out
-        let num_iterations =
-            (1.5 * DEFAULT_CONNECTION_TIMEOUT_SECONDS as f64 / delta).ceil() as usize;
+        let num_iterations = (1.5 * CONNECTION_TIMEOUT_SEC as f64 / delta).ceil() as usize;
         for _ in 0..num_iterations {
             client.update(time).unwrap();
             client.recv(&mut [0; 1175]).unwrap();
@@ -279,10 +280,9 @@ mod tests {
 
         let mut client = Client::with_simulator(token, client_sim).unwrap();
 
-        client.connect().unwrap();
+        client.connect();
 
-        let num_iterations =
-            (1.5 * DEFAULT_CONNECTION_TIMEOUT_SECONDS as f64 / delta).ceil() as usize;
+        let num_iterations = (1.5 * CONNECTION_TIMEOUT_SEC as f64 / delta).ceil() as usize;
         let mut iterations_done = 0;
         for i in 0..num_iterations {
             client.update(time).unwrap();
@@ -329,7 +329,7 @@ mod tests {
         ];
 
         for client in clients.iter_mut() {
-            client.connect().unwrap();
+            client.connect();
         }
 
         loop {
@@ -455,13 +455,12 @@ mod tests {
         let mut server1 = Server::with_simulator(server1_sim, Some(private_key)).unwrap();
         let mut server2 = Server::with_simulator(server2_sim, Some(private_key)).unwrap();
 
-        let token = ConnectToken::build(&[server1.addr(), server2.addr()][..], 0, 0, 0)
-            .private_key(private_key)
+        let token = ConnectToken::build(&[server1.addr(), server2.addr()][..], 0, 0, private_key)
             .generate()
             .unwrap();
 
         let mut client = Client::with_simulator(token, client_sim).unwrap();
-        client.connect().unwrap();
+        client.connect();
 
         // connect to 1st server
         loop {

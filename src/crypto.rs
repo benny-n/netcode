@@ -5,14 +5,12 @@ use chacha20poly1305::{
 };
 use std::io;
 
-use crate::consts::{MAC_SIZE, PRIVATE_KEY_SIZE};
+use crate::{MAC_SIZE, PRIVATE_KEY_SIZE};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error("invalid public key size")]
-    InvalidPublicKeySize,
     #[error("buffer size mismatch")]
     BufferSizeMismatch,
     #[error("failed to encrypt: {0}")]
@@ -20,27 +18,43 @@ pub enum Error {
     #[error("failed to generate key: {0}")]
     GenerateKey(chacha20poly1305::aead::rand_core::Error),
 }
-
-pub type Key = [u8; crate::consts::PRIVATE_KEY_SIZE];
+/// A 32-byte array, used as a key for encrypting and decrypting packets and connect tokens.
+pub type Key = [u8; crate::PRIVATE_KEY_SIZE];
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub fn generate_key() -> Result<Key> {
+/// Generates a random key for encrypting and decrypting packets and connect tokens.
+///
+/// Panics if the underlying RNG fails (highly unlikely). <br>
+/// For a non-panicking version, see [`try_generate_key`](fn.try_generate_key.html).
+///
+/// # Example
+/// ```
+/// use netcode::generate_key;
+///
+/// let key = generate_key();
+/// assert_eq!(key.len(), 32);
+/// ```
+pub fn generate_key() -> Key {
+    let mut key: Key = [0; PRIVATE_KEY_SIZE];
+    OsRng.fill_bytes(&mut key);
+    key
+}
+/// The fallible version of [`generate_key`](fn.generate_key.html).
+///
+/// Returns an error if the underlying RNG fails (highly unlikely).
+///
+/// # Example
+/// ```
+/// use netcode::try_generate_key;
+///
+/// let key = try_generate_key().unwrap();
+/// assert_eq!(key.len(), 32);
+/// ```
+pub fn try_generate_key() -> Result<Key> {
     let mut key: Key = [0; PRIVATE_KEY_SIZE];
     OsRng.try_fill_bytes(&mut key).map_err(Error::GenerateKey)?;
     Ok(key)
 }
-// pub struct U12;
-// impl Nonce for U12 {
-//     const NUM_BYTES: usize = 12;
-// }
-// pub struct U24;
-// impl Nonce for U24 {
-//     const NUM_BYTES: usize = 24;
-// }
-
-// pub trait Nonce {
-//     const NUM_BYTES: usize;
-// }
 
 pub fn encrypt(
     buffer: &mut [u8],
@@ -94,7 +108,7 @@ mod tests {
     fn buf_too_small() {
         let mut buffer = [0; 0];
         let nonce = 0;
-        let key = generate_key().unwrap();
+        let key = generate_key();
         let result = encrypt(&mut buffer, None, nonce, &key);
         assert!(result.is_err());
     }
@@ -103,7 +117,7 @@ mod tests {
     fn encrypt_decrypt_zero_sized_buffer() {
         let mut buffer = [0u8; MAC_SIZE]; // 16 bytes is the minimum size, which our actual buffer is empty
         let nonce = 0;
-        let key = generate_key().unwrap();
+        let key = generate_key();
         encrypt(&mut buffer, None, nonce, &key).unwrap();
 
         // The buffer should have been modified

@@ -5,8 +5,7 @@ use std::{
 
 use crate::{
     bytes::Bytes,
-    consts::{MAX_PAYLOAD_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE},
-    error::NetcodeError,
+    error::{Error, Result},
     packet::{
         DisconnectPacket, KeepAlivePacket, Packet, PayloadPacket, RequestPacket, ResponsePacket,
     },
@@ -14,9 +13,8 @@ use crate::{
     socket::NetcodeSocket,
     token::{ChallengeToken, ConnectToken},
     transceiver::Transceiver,
+    MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
 };
-
-type Result<T> = std::result::Result<T, NetcodeError>;
 
 type Callback<Ctx> =
     Box<dyn FnMut(ClientState, ClientState, Option<&mut Ctx>) + Send + Sync + 'static>;
@@ -29,11 +27,12 @@ type Callback<Ctx> =
 /// # Example
 /// ```
 /// # struct MyContext;
+/// # use netcode::Server;
 /// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
-/// # let private_key = [42u8; 32];
-/// # let token = netcode::server::Server::new(addr, 0x11223344, Some(private_key)).unwrap().token(123u64).generate().unwrap();
+/// # let private_key = netcode::generate_key();
+/// # let token = Server::new(addr, 0x11223344, private_key).unwrap().token(123u64).generate().unwrap();
 /// # let token_bytes = token.try_into_bytes().unwrap();
-/// use netcode::client::{Client, ClientConfig, ClientState};
+/// use netcode::{Client, ClientConfig, ClientState};
 ///
 /// let cfg = ClientConfig::with_context(MyContext {})
 ///     .num_disconnect_packets(10)
@@ -44,7 +43,7 @@ type Callback<Ctx> =
 ///     }
 /// });
 /// let mut client = Client::with_config(&token_bytes, cfg).unwrap();
-/// client.connect().unwrap();
+/// client.connect();
 /// ```
 pub struct ClientConfig<Ctx> {
     ctx: Option<Box<Ctx>>,
@@ -57,7 +56,7 @@ impl<Ctx> Default for ClientConfig<Ctx> {
     fn default() -> Self {
         Self {
             num_disconnect_packets: 10,
-            packet_send_rate: PACKET_SEND_RATE,
+            packet_send_rate: PACKET_SEND_RATE_SEC,
             ctx: None,
             on_state_change: None,
         }
@@ -65,11 +64,11 @@ impl<Ctx> Default for ClientConfig<Ctx> {
 }
 
 impl<Ctx> ClientConfig<Ctx> {
-    /// Create a new, default client configuration.
+    /// Create a new, default client configuration with no context.
     pub fn new() -> ClientConfig<()> {
         ClientConfig::<()>::default()
     }
-    /// Create a new client configuration with a context.
+    /// Create a new client configuration with context that will be passed to the callbacks.
     pub fn with_context(ctx: Ctx) -> Self {
         Self {
             ctx: Some(Box::new(ctx)),
@@ -77,13 +76,15 @@ impl<Ctx> ClientConfig<Ctx> {
         }
     }
     /// Set the number of redundant disconnect packets that will be sent to a server when the clients wants to disconnect.
+    /// The default is 10 packets.
     pub fn num_disconnect_packets(mut self, num_disconnect_packets: usize) -> Self {
         self.num_disconnect_packets = num_disconnect_packets;
         self
     }
     /// Set the rate at which periodic packets will be sent to the server.
-    pub fn packet_send_rate(mut self, packet_send_rate: f64) -> Self {
-        self.packet_send_rate = packet_send_rate;
+    /// The default is 10 packets per second. (`0.1` seconds)
+    pub fn packet_send_rate(mut self, rate_seconds: f64) -> Self {
+        self.packet_send_rate = rate_seconds;
         self
     }
     /// Set a callback that will be called when the client changes states.
@@ -157,10 +158,7 @@ pub struct Client<T: Transceiver, Ctx = ()> {
 impl<Ctx> Client<NetcodeSocket, Ctx> {
     fn from_token(token_bytes: &[u8]) -> Result<Self> {
         if token_bytes.len() != ConnectToken::SIZE {
-            return Err(NetcodeError::BufferSizeMismatch(
-                ConnectToken::SIZE,
-                token_bytes.len(),
-            ));
+            return Err(Error::SizeMismatch(ConnectToken::SIZE, token_bytes.len()));
         }
         let mut buf = [0u8; ConnectToken::SIZE];
         buf.copy_from_slice(token_bytes);
@@ -168,7 +166,8 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
         let token = match ConnectToken::read_from(&mut cursor) {
             Ok(token) => token,
             Err(err) => {
-                return Err(NetcodeError::InvalidConnectToken(err));
+                log::error!("invalid connect token: {err}");
+                return Err(Error::InvalidToken(err));
             }
         };
         Ok(Self {
@@ -198,17 +197,21 @@ impl Client<NetcodeSocket> {
     ///
     /// # Example
     /// ```
-    /// # use netcode::client::{Client, ClientConfig, ClientState};
-    /// # use netcode::token::ConnectToken;
+    /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
     /// // Generate a connection token for the client
-    /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, 0).generate().unwrap().try_into_bytes().unwrap();
+    /// let private_key = netcode::generate_key();
+    /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, private_key)
+    ///     .generate()
+    ///     .unwrap()
+    ///     .try_into_bytes()
+    ///     .unwrap();
     ///
     /// // Start the client
     /// let mut client = Client::new(&token_bytes).unwrap();
     /// assert_eq!(client.state(), ClientState::Disconnected);
     ///
     /// // Connect to the server
-    /// client.connect().unwrap();
+    /// client.connect();
     /// assert_eq!(client.state(), ClientState::SendingConnectionRequest);
     /// ```
     pub fn new(token_bytes: &[u8]) -> Result<Client<NetcodeSocket>> {
@@ -225,11 +228,15 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     ///
     /// # Example
     /// ```
-    /// # use netcode::client::{Client, ClientConfig, ClientState};
-    /// # use netcode::token::ConnectToken;
+    /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
     /// # struct MyContext;
     /// // Generate a connection token for the client
-    /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, 0).generate().unwrap().try_into_bytes().unwrap();
+    /// let private_key = netcode::generate_key();
+    /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, private_key)
+    ///     .generate()
+    ///     .unwrap()
+    ///     .try_into_bytes()
+    ///     .unwrap();
     ///
     /// // Create a client configuration with a context
     /// let cfg = ClientConfig::with_context(MyContext {}).on_state_change(|from, to, _ctx| {
@@ -242,7 +249,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     /// assert_eq!(client.state(), ClientState::Disconnected);
     ///
     /// // Connect to the server
-    /// client.connect().unwrap();
+    /// client.connect();
     /// assert_eq!(client.state(), ClientState::SendingConnectionRequest);
     /// ```
     pub fn with_config(
@@ -320,12 +327,13 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.send_packet(packet)?;
         Ok(())
     }
-    fn connect_to_next_server(&mut self) -> Result<()> {
+    fn connect_to_next_server(&mut self) -> std::result::Result<(), ()> {
         if self.server_addr_idx + 1 >= self.token.server_addresses.len() {
-            return Err(NetcodeError::NoMoreServers);
+            log::debug!("no more servers to connect to");
+            return Err(());
         }
         self.server_addr_idx += 1;
-        self.connect()?;
+        self.connect();
         Ok(())
     }
     fn send_packet(&mut self, packet: Packet) -> Result<()> {
@@ -398,7 +406,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         Ok(())
     }
     // TODO: document
-    pub fn connect(&mut self) -> Result<()> {
+    pub fn connect(&mut self) {
         self.reset_connection();
         self.set_state(ClientState::SendingConnectionRequest);
         log::info!(
@@ -407,7 +415,6 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             self.server_addr_idx + 1,
             self.token.server_addresses.len()
         );
-        Ok(())
     }
     /// Gets the local `SocketAddr` that the client is bound to.
     pub fn addr(&self) -> SocketAddr {
@@ -452,7 +459,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             Self::ALLOWED_PACKETS,
         ) {
             Ok(packet) => packet,
-            Err(NetcodeError::Crypto(_)) => {
+            Err(Error::Crypto(_)) => {
                 log::debug!("client ignored packet because it failed to decrypt");
                 return Ok(0);
             }
@@ -474,8 +481,8 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         if self.state != ClientState::Connected {
             return Ok(());
         }
-        if buf.len() > MAX_PAYLOAD_SIZE {
-            return Err(NetcodeError::PacketSizeExceeded(buf.len()));
+        if buf.len() > MAX_PACKET_SIZE {
+            return Err(Error::SizeMismatch(MAX_PACKET_SIZE, buf.len()));
         }
         self.send_packet(PayloadPacket::create(buf))?;
         Ok(())
@@ -533,8 +540,8 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consts::NETCODE_VERSION;
     use crate::simulator::NetworkSimulator;
+    use crate::NETCODE_VERSION;
     use std::io::Write;
     impl Client<NetworkSimulator> {
         pub fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
@@ -568,10 +575,7 @@ mod tests {
         let Err(err) = Client::new(&token_bytes) else {
             panic!("expected error");
         };
-        assert_eq!(
-            "invalid connect token: invalid version info",
-            err.to_string()
-        );
+        assert_eq!("invalid connect token: invalid version", err.to_string());
         let mut token_bytes = [0u8; ConnectToken::SIZE];
         let mut cursor = std::io::Cursor::new(&mut token_bytes[..]);
         cursor.write_all(NETCODE_VERSION).unwrap();
@@ -579,7 +583,7 @@ mod tests {
             panic!("expected error");
         };
         assert_eq!(
-            "invalid connect token: invalid address list length 0",
+            "invalid connect token: address list length is out of range 1-32: 0",
             err.to_string()
         );
     }
