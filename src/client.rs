@@ -215,7 +215,7 @@ impl Client<NetcodeSocket> {
     /// client.connect();
     /// assert_eq!(client.state(), ClientState::SendingConnectionRequest);
     /// ```
-    pub fn new(token_bytes: &[u8]) -> Result<Client<NetcodeSocket>> {
+    pub fn new(token_bytes: &[u8]) -> Result<Self> {
         let client = Client::from_token(token_bytes, ClientConfig::default())?;
         log::info!("client started on {}", client.transceiver.addr());
         Ok(client)
@@ -253,10 +253,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     /// client.connect();
     /// assert_eq!(client.state(), ClientState::SendingConnectionRequest);
     /// ```
-    pub fn with_config(
-        token_bytes: &[u8],
-        cfg: ClientConfig<Ctx>,
-    ) -> Result<Client<NetcodeSocket, Ctx>> {
+    pub fn with_config(token_bytes: &[u8], cfg: ClientConfig<Ctx>) -> Result<Self> {
         let client = Client::from_token(token_bytes, cfg)?;
         log::info!("client started on {}", client.transceiver.addr());
         Ok(client)

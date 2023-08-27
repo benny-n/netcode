@@ -344,11 +344,7 @@ impl Server<NetcodeSocket> {
     /// let addr = "127.0.0.1:41234";
     /// let server = Server::new(addr, protocol_id, private_key).unwrap();
     /// ```
-    pub fn new(
-        bind_addr: impl ToSocketAddrs,
-        protocol_id: u64,
-        private_key: Key,
-    ) -> Result<Server<NetcodeSocket, ()>> {
+    pub fn new(bind_addr: impl ToSocketAddrs, protocol_id: u64, private_key: Key) -> Result<Self> {
         let server: Server<_, ()> = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
             time: 0.0,
