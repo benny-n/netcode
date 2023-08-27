@@ -27,7 +27,7 @@ type Callback<Ctx> = Box<dyn FnMut(ClientState, ClientState, &mut Ctx) + Send + 
 /// ```
 /// # struct MyContext;
 /// # use netcode::Server;
-/// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
+/// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40001));
 /// # let private_key = netcode::generate_key();
 /// # let token = Server::new(addr, 0x11223344, private_key).unwrap().token(123u64).generate().unwrap();
 /// # let token_bytes = token.try_into_bytes().unwrap();

@@ -231,7 +231,7 @@ type Callback<Ctx> = Box<dyn FnMut(ClientIndex, &mut Ctx) + Send + Sync + 'stati
 ///
 /// # Example
 /// ```
-/// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
+/// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40005));
 /// # let protocol_id = 0x123456789ABCDEF0;
 /// # let private_key = [42u8; 32];
 /// use std::sync::{Arc, Mutex};
@@ -314,6 +314,39 @@ impl<Ctx> ServerConfig<Ctx> {
         self
     }
 }
+
+/// The `netcode` server.
+///
+/// Responsible for accepting connections from clients and communicating with them using the netcode protocol. <br>
+/// The server should be run in a loop to process incoming data, send updates to clients, and maintain stable connections.
+///
+/// # Example
+///
+/// ```
+/// # use netcode::Server;
+/// # use std::net::{SocketAddr, Ipv4Addr};
+/// # use std::time::{Instant, Duration};
+/// # use std::thread;
+/// # let private_key = netcode::generate_key();
+/// # let protocol_id = 0x123456789ABCDEF0;
+/// # let addr = "127.0.0.1:41235";
+/// let mut server = Server::new(addr, protocol_id, private_key).unwrap();
+///
+/// let start = Instant::now();
+/// let tick_rate_secs = 1.0 / 60.0;
+///
+/// loop {
+///     server.update(start.elapsed().as_secs_f64());
+///     let mut packet = [0; netcode::MAX_PACKET_SIZE];
+///     if let Ok(Some((received, _))) = server.recv(&mut packet) {
+///         let payload = &packet[..received];
+///         // ...
+///     }
+///     thread::sleep(Duration::from_secs_f64(tick_rate_secs));
+///     # break;
+/// }
+/// ```
+///
 pub struct Server<T: Transceiver, Ctx = ()> {
     transceiver: T,
     time: f64,
@@ -376,7 +409,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
     ///
     /// let private_key = netcode::generate_key();
     /// let protocol_id = 0x123456789ABCDEF0;
-    /// let addr = "127.0.0.1:40000".parse().unwrap();
+    /// let addr = "127.0.0.1:40002".parse().unwrap();
     /// let cfg = ServerConfig::with_context(42).on_connect(|idx, ctx| {
     ///     assert_eq!(ctx, &42);
     /// });
@@ -705,7 +738,7 @@ impl<T: Transceiver, S> Server<T, S> {
     /// # use netcode::{Server, ServerConfig};
     /// # use std::net::{SocketAddr, Ipv4Addr};
     /// # use std::time::Instant;
-    /// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
+    /// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40004));
     /// # let protocol_id = 0x123456789ABCDEF0;
     /// # let private_key = [42u8; 32];
     /// # let mut server = Server::new(addr, protocol_id, private_key).unwrap();
@@ -722,6 +755,36 @@ impl<T: Transceiver, S> Server<T, S> {
         self.check_for_timeouts();
         self.send_keep_alive_packets();
     }
+    /// Receives a packet from a client, if one is available.
+    ///
+    /// If a packet is received, the provided buffer will be filled with the packet data.
+    /// The size of the packet will be returned along with the client index of the client that sent the packet.
+    ///
+    /// If a non-payload packet is received, the server will process it and return `Ok(None)`.
+    ///
+    /// To allow the server to process packets regularly, this method should be called at a fixed interval
+    /// like [`update`](Server::update).
+    ///
+    /// # Example
+    /// ```
+    /// # use netcode::{Server, ServerConfig};
+    /// # use std::net::{SocketAddr, Ipv4Addr};
+    /// # use std::time::Instant;
+    /// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40003));
+    /// # let protocol_id = 0x123456789ABCDEF0;
+    /// # let private_key = [42u8; 32];
+    /// # let mut server = Server::new(addr, protocol_id, private_key).unwrap();
+    /// let start = Instant::now();
+    /// loop {
+    ///    let now = start.elapsed().as_secs_f64();
+    ///    server.update(now);
+    ///    let mut packet_buf = [0u8; netcode::MAX_PACKET_SIZE];
+    ///    let result = server.recv(&mut packet_buf);
+    ///    match result {
+    ///        // ...
+    ///        # _ => break,
+    ///    }
+    /// }
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<Option<(usize, ClientIndex)>> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let Some((size, addr)) = self.transceiver.recv(buf).map_err(|e| e.into())? else {
