@@ -16,8 +16,7 @@ use crate::{
     MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
 };
 
-type Callback<Ctx> =
-    Box<dyn FnMut(ClientState, ClientState, Option<&mut Ctx>) + Send + Sync + 'static>;
+type Callback<Ctx> = Box<dyn FnMut(ClientState, ClientState, &mut Ctx) + Send + Sync + 'static>;
 /// Configuration for a client
 ///
 /// * `num_disconnect_packets` - The number of redundant disconnect packets that will be sent to a server when the clients wants to disconnect.
@@ -46,18 +45,18 @@ type Callback<Ctx> =
 /// client.connect();
 /// ```
 pub struct ClientConfig<Ctx> {
-    ctx: Option<Box<Ctx>>,
-    on_state_change: Option<Callback<Ctx>>,
-    packet_send_rate: f64,
     num_disconnect_packets: usize,
+    packet_send_rate: f64,
+    context: Ctx,
+    on_state_change: Option<Callback<Ctx>>,
 }
 
-impl<Ctx> Default for ClientConfig<Ctx> {
+impl Default for ClientConfig<()> {
     fn default() -> Self {
         Self {
             num_disconnect_packets: 10,
             packet_send_rate: PACKET_SEND_RATE_SEC,
-            ctx: None,
+            context: (),
             on_state_change: None,
         }
     }
@@ -71,8 +70,10 @@ impl<Ctx> ClientConfig<Ctx> {
     /// Create a new client configuration with context that will be passed to the callbacks.
     pub fn with_context(ctx: Ctx) -> Self {
         Self {
-            ctx: Some(Box::new(ctx)),
-            ..Self::default()
+            num_disconnect_packets: 10,
+            packet_send_rate: PACKET_SEND_RATE_SEC,
+            context: ctx,
+            on_state_change: None,
         }
     }
     /// Set the number of redundant disconnect packets that will be sent to a server when the clients wants to disconnect.
@@ -90,7 +91,7 @@ impl<Ctx> ClientConfig<Ctx> {
     /// Set a callback that will be called when the client changes states.
     pub fn on_state_change<F>(mut self, cb: F) -> Self
     where
-        F: FnMut(ClientState, ClientState, Option<&mut Ctx>) + Send + Sync + 'static,
+        F: FnMut(ClientState, ClientState, &mut Ctx) + Send + Sync + 'static,
     {
         self.on_state_change = Some(Box::new(cb));
         self
@@ -156,7 +157,7 @@ pub struct Client<T: Transceiver, Ctx = ()> {
 }
 
 impl<Ctx> Client<NetcodeSocket, Ctx> {
-    fn from_token(token_bytes: &[u8]) -> Result<Self> {
+    fn from_token(token_bytes: &[u8], cfg: ClientConfig<Ctx>) -> Result<Self> {
         if token_bytes.len() != ConnectToken::SIZE {
             return Err(Error::SizeMismatch(ConnectToken::SIZE, token_bytes.len()));
         }
@@ -187,7 +188,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
             replay_protection: ReplayProtection::new(),
             should_disconnect: false,
             should_disconnect_state: ClientState::Disconnected,
-            cfg: ClientConfig::default(),
+            cfg,
         })
     }
 }
@@ -215,7 +216,7 @@ impl Client<NetcodeSocket> {
     /// assert_eq!(client.state(), ClientState::SendingConnectionRequest);
     /// ```
     pub fn new(token_bytes: &[u8]) -> Result<Client<NetcodeSocket>> {
-        let client = Client::from_token(token_bytes)?;
+        let client = Client::from_token(token_bytes, ClientConfig::default())?;
         log::info!("client started on {}", client.transceiver.addr());
         Ok(client)
     }
@@ -256,8 +257,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
         token_bytes: &[u8],
         cfg: ClientConfig<Ctx>,
     ) -> Result<Client<NetcodeSocket, Ctx>> {
-        let mut client = Client::from_token(token_bytes)?;
-        client.cfg = cfg;
+        let client = Client::from_token(token_bytes, cfg)?;
         log::info!("client started on {}", client.transceiver.addr());
         Ok(client)
     }
@@ -272,11 +272,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
     fn set_state(&mut self, state: ClientState) {
         log::debug!("client state changing from {:?} to {:?}", self.state, state);
         if let Some(ref mut cb) = self.cfg.on_state_change {
-            cb(
-                self.state,
-                state,
-                self.cfg.ctx.as_mut().map(|ctx| ctx.as_mut()),
-            )
+            cb(self.state, state, &mut self.cfg.context)
         }
         self.state = state;
     }
@@ -300,9 +296,9 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.reset_connection();
         log::debug!("client disconnected");
     }
-    fn send_periodic_packets(&mut self) -> Result<()> {
+    fn send_periodic_packets(&mut self) {
         if self.last_send_time + self.cfg.packet_send_rate >= self.time {
-            return Ok(());
+            return;
         }
         let packet = match self.state {
             ClientState::SendingConnectionRequest => {
@@ -322,10 +318,11 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
                 log::trace!("client sending connection keep alive packet to server");
                 KeepAlivePacket::create(0, 0)
             }
-            _ => return Ok(()),
+            _ => return,
         };
-        self.send_packet(packet)?;
-        Ok(())
+        if let Err(e) = self.send_packet(packet) {
+            log::error!("client failed to send packet: {e}");
+        }
     }
     fn connect_to_next_server(&mut self) -> std::result::Result<(), ()> {
         if self.server_addr_idx + 1 >= self.token.server_addresses.len() {
@@ -395,7 +392,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         Ok(())
     }
     // TODO: document
-    pub fn disconnect(mut self) -> Result<()> {
+    pub fn disconnect(&mut self) -> Result<()> {
         log::debug!(
             "client sending {} disconnect packets to server",
             self.cfg.num_disconnect_packets
@@ -488,9 +485,9 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         Ok(())
     }
     // TODO: document
-    pub fn update(&mut self, time: f64) -> Result<()> {
+    pub fn update(&mut self, time: f64) {
         self.time = time;
-        self.send_periodic_packets()?;
+        self.send_periodic_packets();
         let is_token_expired = self.time - self.start_time
             >= self.token.expire_timestamp as f64 - self.token.create_timestamp as f64;
         let is_connection_timed_out = self.token.timeout_seconds.is_positive()
@@ -508,21 +505,21 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
                     self.should_disconnect_state
                 );
                 if self.connect_to_next_server().is_ok() {
-                    return Ok(());
+                    return;
                 };
                 self.should_disconnect_state
             }
             ClientState::SendingConnectionRequest if is_connection_timed_out => {
                 log::info!("client connect failed. connection request timed out");
                 if self.connect_to_next_server().is_ok() {
-                    return Ok(());
+                    return;
                 };
                 ClientState::ConnectionRequestTimedOut
             }
             ClientState::SendingChallengeResponse if is_connection_timed_out => {
                 log::info!("client connect failed. connection response timed out");
                 if self.connect_to_next_server().is_ok() {
-                    return Ok(());
+                    return;
                 };
                 ClientState::ChallengeResponseTimedOut
             }
@@ -530,10 +527,9 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
                 log::info!("client connection timed out");
                 ClientState::ConnectionTimedOut
             }
-            _ => return Ok(()),
+            _ => return,
         };
         self.reset(new_state);
-        Ok(())
     }
 }
 

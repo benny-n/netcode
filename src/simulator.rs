@@ -171,9 +171,9 @@ mod tests {
         client.connect();
 
         loop {
-            client.update(time).unwrap();
+            client.update(time);
             client.recv(&mut [0; 1175]).unwrap();
-            server.update(time).unwrap();
+            server.update(time);
             server.recv(&mut [0; 1175]).unwrap();
 
             if client.state() == ClientState::Connected {
@@ -188,7 +188,7 @@ mod tests {
 
         let mut payload = vec![b'a'];
         loop {
-            client.update(time).unwrap();
+            client.update(time);
             client.send(&payload).unwrap();
             let mut buf = [0; 1175];
             let size = client.recv(&mut buf).unwrap();
@@ -197,7 +197,7 @@ mod tests {
                 payload.push(payload.last().unwrap() + 1);
             }
 
-            server.update(time).unwrap();
+            server.update(time);
             let mut buf = [0; 1175];
             if let Ok(Some((size, client_idx))) = server.recv(&mut buf) {
                 assert_eq!(client_idx, ClientIndex(0));
@@ -236,9 +236,9 @@ mod tests {
 
         // connect client
         loop {
-            client.update(time).unwrap();
+            client.update(time);
             client.recv(&mut [0; 1175]).unwrap();
-            server.update(time).unwrap();
+            server.update(time);
             server.recv(&mut [0; 1175]).unwrap();
 
             if client.is_connected() || client.is_error() {
@@ -254,7 +254,7 @@ mod tests {
         // now don't update server for a while and ensure client times out
         let num_iterations = (1.5 * CONNECTION_TIMEOUT_SEC as f64 / delta).ceil() as usize;
         for _ in 0..num_iterations {
-            client.update(time).unwrap();
+            client.update(time);
             client.recv(&mut [0; 1175]).unwrap();
 
             time += delta;
@@ -285,9 +285,9 @@ mod tests {
         let num_iterations = (1.5 * CONNECTION_TIMEOUT_SEC as f64 / delta).ceil() as usize;
         let mut iterations_done = 0;
         for i in 0..num_iterations {
-            client.update(time).unwrap();
+            client.update(time);
             client.recv(&mut [0; 1175]).unwrap();
-            server.update(time).unwrap();
+            server.update(time);
             server.recv(&mut [0; 1175]).unwrap();
 
             if client.is_connected() || client.is_error() {
@@ -334,10 +334,10 @@ mod tests {
 
         loop {
             for client in clients.iter_mut() {
-                client.update(time).unwrap();
+                client.update(time);
                 client.recv(&mut [0; 1175]).unwrap();
             }
-            server.update(time).unwrap();
+            server.update(time);
             server.recv(&mut [0; 1175]).unwrap();
 
             if clients.iter().all(|c| c.is_connected()) || clients.iter().any(|c| c.is_error()) {
@@ -357,7 +357,7 @@ mod tests {
         let payload = b"hello";
         loop {
             for (i, client) in clients.iter_mut().enumerate() {
-                client.update(time).unwrap();
+                client.update(time);
                 let mut buf = [0; 1175];
                 let size = client.recv(&mut buf).unwrap();
                 if size > 0 {
@@ -369,7 +369,7 @@ mod tests {
                     client.send(payload).unwrap();
                 }
             }
-            server.update(time).unwrap();
+            server.update(time);
             let mut buf = [0; 1175];
             if let Ok(Some((size, client_idx))) = server.recv(&mut buf) {
                 server_num_packets_received[client_idx] = true;
@@ -398,10 +398,10 @@ mod tests {
         clients.pop().unwrap().disconnect().unwrap();
         loop {
             for client in clients.iter_mut() {
-                client.update(time).unwrap();
+                client.update(time);
                 client.recv(&mut [0; 1175]).unwrap();
             }
-            server.update(time).unwrap();
+            server.update(time);
             server.recv(&mut [0; 1175]).unwrap();
 
             if clients.iter().any(|c| c.is_error()) {
@@ -420,10 +420,10 @@ mod tests {
         server.disconnect_all().unwrap();
         loop {
             for client in clients.iter_mut() {
-                client.update(time).unwrap();
+                client.update(time);
                 client.recv(&mut [0; 1175]).unwrap();
             }
-            server.update(time).unwrap();
+            server.update(time);
             server.recv(&mut [0; 1175]).unwrap();
 
             if clients.iter().any(|c| c.is_error()) {
@@ -464,9 +464,9 @@ mod tests {
 
         // connect to 1st server
         loop {
-            client.update(time).unwrap();
+            client.update(time);
             client.recv(&mut [0; 1175]).unwrap();
-            server1.update(time).unwrap();
+            server1.update(time);
             server1.recv(&mut [0; 1175]).unwrap();
 
             if client.is_connected() || client.is_error() {
@@ -483,11 +483,11 @@ mod tests {
         // disconnect client from 1st server
         server1.disconnect_all().unwrap();
         loop {
-            client.update(time).unwrap();
+            client.update(time);
             client.recv(&mut [0; 1175]).unwrap();
-            server1.update(time).unwrap();
+            server1.update(time);
             server1.recv(&mut [0; 1175]).unwrap();
-            server2.update(time).unwrap();
+            server2.update(time);
             server2.recv(&mut [0; 1175]).unwrap();
 
             if client.is_error() {

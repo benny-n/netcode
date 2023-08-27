@@ -35,7 +35,7 @@
 //! loop {
 //!     thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
 //!     let now = start.elapsed().as_secs_f64();
-//!     server.update(now).unwrap();
+//!     server.update(now);
 //!     let mut packet = [0; MAX_PACKET_SIZE];
 //!     if let Ok(Some((received, _))) = server.recv(&mut packet) {
 //!        let payload = &packet[..received];
@@ -101,7 +101,7 @@ pub(crate) const PRIVATE_KEY_SIZE: usize = 32;
 pub use crate::client::{Client, ClientConfig, ClientState};
 pub use crate::crypto::{generate_key, try_generate_key, Key};
 pub use crate::error::{Error, Result};
-pub use crate::server::{Server, ServerConfig};
+pub use crate::server::{ClientId, ClientIndex, Server, ServerConfig};
 pub use crate::token::{ConnectToken, ConnectTokenBuilder, InvalidTokenError};
 
 // Public constants

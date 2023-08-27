@@ -221,7 +221,7 @@ impl ConnectionCache {
         }
     }
 }
-type Callback<Ctx> = Box<dyn FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync + 'static>;
+type Callback<Ctx> = Box<dyn FnMut(ClientIndex, &mut Ctx) + Send + Sync + 'static>;
 /// Configuration for a server.
 ///
 /// * `num_disconnect_packets` - The number of redundant disconnect packets that will be sent to a client when the server is disconnecting it.
@@ -239,27 +239,25 @@ type Callback<Ctx> = Box<dyn FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync 
 ///
 /// let thread_safe_counter = Arc::new(Mutex::new(0));
 /// let cfg = ServerConfig::with_context(thread_safe_counter).on_connect(|idx, ctx| {
-///     if let Some(ctx) = ctx {
-///         let mut counter = ctx.lock().unwrap();
-///         *counter += 1;
-///         println!("client {} connected, counter: {idx}", counter);
-///     }
+///     let mut counter = ctx.lock().unwrap();
+///     *counter += 1;
+///     println!("client {} connected, counter: {idx}", counter);
 /// });
 /// let server = Server::with_config(addr, protocol_id, private_key, cfg).unwrap();
 /// ```
 pub struct ServerConfig<Ctx> {
     num_disconnect_packets: usize,
     keep_alive_send_rate: f64,
-    context: Option<Box<Ctx>>,
+    context: Ctx,
     on_connect: Option<Callback<Ctx>>,
     on_disconnect: Option<Callback<Ctx>>,
 }
-impl<Ctx> Default for ServerConfig<Ctx> {
+impl Default for ServerConfig<()> {
     fn default() -> Self {
         Self {
             num_disconnect_packets: 10,
             keep_alive_send_rate: PACKET_SEND_RATE_SEC,
-            context: None,
+            context: (),
             on_connect: None,
             on_disconnect: None,
         }
@@ -274,8 +272,11 @@ impl<Ctx> ServerConfig<Ctx> {
     /// Create a new server configuration with context that will be passed to the callbacks.
     pub fn with_context(ctx: Ctx) -> Self {
         Self {
-            context: Some(Box::new(ctx)),
-            ..Self::default()
+            num_disconnect_packets: 10,
+            keep_alive_send_rate: PACKET_SEND_RATE_SEC,
+            context: ctx,
+            on_connect: None,
+            on_disconnect: None,
         }
     }
     /// Set the number of redundant disconnect packets that will be sent to a client when the server is disconnecting it. <br>
@@ -296,7 +297,7 @@ impl<Ctx> ServerConfig<Ctx> {
     /// See [`ServerConfig`](ServerConfig) for an example.
     pub fn on_connect<F>(mut self, cb: F) -> Self
     where
-        F: FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync + 'static,
+        F: FnMut(ClientIndex, &mut Ctx) + Send + Sync + 'static,
     {
         self.on_connect = Some(Box::new(cb));
         self
@@ -307,7 +308,7 @@ impl<Ctx> ServerConfig<Ctx> {
     /// See [`ServerConfig`](ServerConfig) for an example.
     pub fn on_disconnect<F>(mut self, cb: F) -> Self
     where
-        F: FnMut(ClientIndex, Option<&mut Ctx>) + Send + Sync + 'static,
+        F: FnMut(ClientIndex, &mut Ctx) + Send + Sync + 'static,
     {
         self.on_disconnect = Some(Box::new(cb));
         self
@@ -368,9 +369,9 @@ impl Server<NetcodeSocket> {
 }
 
 impl<Ctx> Server<NetcodeSocket, Ctx> {
-    /// Create a new with a custom configuration.
-    ///
-    /// State can be provided in the [`ServerConfig`](ServerConfig).
+    /// Create a new server with a custom configuration. <br>
+    /// Callbacks with context can be registered with the server to be notified when the server changes states. <br>
+    /// See [`ServerConfig`](ServerConfig) for more details.
     ///
     /// # Example
     /// ```
@@ -381,9 +382,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
     /// let protocol_id = 0x123456789ABCDEF0;
     /// let addr = "127.0.0.1:40000".parse().unwrap();
     /// let cfg = ServerConfig::with_context(42).on_connect(|idx, ctx| {
-    ///     if let Some(ctx) = ctx {
-    ///         assert_eq!(*ctx, 42);
-    ///     }
+    ///     assert_eq!(ctx, &42);
     /// });
     /// let server = Server::with_config(addr, protocol_id, private_key, cfg).unwrap();
     /// ```
@@ -420,12 +419,12 @@ impl<T: Transceiver, S> Server<T, S> {
         | 1 << Packet::DISCONNECT;
     fn on_connect(&mut self, client_idx: ClientIndex) {
         if let Some(cb) = self.cfg.on_connect.as_mut() {
-            cb(client_idx, self.cfg.context.as_mut().map(|s| s.as_mut()))
+            cb(client_idx, &mut self.cfg.context)
         }
     }
     fn on_disconnect(&mut self, client_idx: ClientIndex) {
         if let Some(cb) = self.cfg.on_disconnect.as_mut() {
-            cb(client_idx, self.cfg.context.as_mut().map(|s| s.as_mut()))
+            cb(client_idx, &mut self.cfg.context)
         }
     }
     fn touch_client(&mut self, client_idx: Option<ClientIndex>) -> Result<()> {
@@ -458,6 +457,7 @@ impl<T: Transceiver, S> Server<T, S> {
             Packet::Disconnect(_) => {
                 if let Some(idx) = client_idx {
                     log::debug!("server disconnected client {idx}");
+                    self.on_disconnect(idx);
                     self.conn_cache.remove(idx);
                 }
                 Ok(())
@@ -484,27 +484,6 @@ impl<T: Transceiver, S> Server<T, S> {
         conn.last_access_time = self.time;
         conn.last_send_time = self.time;
         conn.sequence += 1;
-        Ok(())
-    }
-    pub fn disconnect_client(&mut self, client_idx: ClientIndex) -> Result<()> {
-        log::debug!("server disconnecting client {client_idx}");
-        for _ in 0..self.cfg.num_disconnect_packets {
-            self.send_to_client(DisconnectPacket::create(), client_idx)?;
-        }
-        self.on_disconnect(client_idx);
-        self.conn_cache.remove(client_idx);
-        Ok(())
-    }
-    pub fn disconnect_all(&mut self) -> Result<()> {
-        log::debug!("server disconnecting all clients");
-        for idx in 0..MAX_CLIENTS {
-            let Some(conn) = self.conn_cache.clients.get_mut(idx) else {
-                continue;
-            };
-            if conn.is_connected() {
-                self.disconnect_client(ClientIndex(idx))?;
-            }
-        }
         Ok(())
     }
     fn process_connection_request(
@@ -659,7 +638,7 @@ impl<T: Transceiver, S> Server<T, S> {
             }
         }
     }
-    fn send_keep_alive_packets(&mut self) -> Result<()> {
+    fn send_keep_alive_packets(&mut self) {
         for idx in 0..MAX_CLIENTS {
             let Some(client) = self.conn_cache.clients.get_mut(idx) else {
                 continue;
@@ -667,15 +646,20 @@ impl<T: Transceiver, S> Server<T, S> {
             if !client.is_connected() {
                 continue;
             }
-            if client.last_send_time + self.cfg.keep_alive_send_rate < self.time {
-                log::trace!("server sent connection keep alive packet to client {idx}");
-                self.send_to_client(
-                    KeepAlivePacket::create(idx as i32, self.max_clients as i32),
-                    ClientIndex(idx),
-                )?;
+            if client.last_send_time + self.cfg.keep_alive_send_rate >= self.time {
+                continue;
+            }
+
+            match self.send_to_client(
+                KeepAlivePacket::create(idx as i32, self.max_clients as i32),
+                ClientIndex(idx),
+            ) {
+                Ok(_) => log::trace!("server sent connection keep alive packet to client {idx}"),
+                Err(e) => log::error!(
+                    "server failed to send connection keep alive packet to client {idx}: {e}"
+                ),
             }
         }
-        Ok(())
     }
     /// Gets the local `SocketAddr` this server is bound to.
     pub fn addr(&self) -> SocketAddr {
@@ -716,12 +700,31 @@ impl<T: Transceiver, S> Server<T, S> {
         self.token_sequence += 1;
         token_builder
     }
-    pub fn update(&mut self, time: f64) -> Result<()> {
+    /// Updates the server state.
+    ///
+    /// This should be called regularly, preferably at a fixed interval.
+    ///
+    /// # Example
+    /// ```
+    /// # use netcode::{Server, ServerConfig};
+    /// # use std::net::{SocketAddr, Ipv4Addr};
+    /// # use std::time::Instant;
+    /// # let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
+    /// # let protocol_id = 0x123456789ABCDEF0;
+    /// # let private_key = [42u8; 32];
+    /// # let mut server = Server::new(addr, protocol_id, private_key).unwrap();
+    /// let start = Instant::now();
+    /// loop {
+    ///    let now = start.elapsed().as_secs_f64();
+    ///    server.update(now);
+    ///    // ...
+    ///    # break;
+    /// }
+    pub fn update(&mut self, time: f64) {
         self.time = time;
         self.conn_cache.update(self.time);
         self.check_for_timeouts();
-        self.send_keep_alive_packets()?;
-        Ok(())
+        self.send_keep_alive_packets();
     }
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<Option<(usize, ClientIndex)>> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -779,6 +782,9 @@ impl<T: Transceiver, S> Server<T, S> {
             .find_by_addr(&addr)
             .and_then(|idx| (size > 0).then_some((size, idx))))
     }
+    /// Sends a packet to a client.
+    ///
+    /// The provided buffer must be smaller than [`MAX_PACKET_SIZE`](crate::MAX_PACKET_SIZE).
     pub fn send(&mut self, buf: &[u8], client_idx: ClientIndex) -> Result<()> {
         if buf.len() > MAX_PACKET_SIZE {
             return Err(Error::SizeMismatch(MAX_PACKET_SIZE, buf.len()));
@@ -803,6 +809,32 @@ impl<T: Transceiver, S> Server<T, S> {
         let packet = PayloadPacket::create(buf);
         self.send_to_client(packet, client_idx)
     }
+    /// Disconnects a client.
+    ///
+    /// The server will send a number of redundant disconnect packets to the client, and then remove its connection info.
+    pub fn disconnect_client(&mut self, client_idx: ClientIndex) -> Result<()> {
+        log::debug!("server disconnecting client {client_idx}");
+        for _ in 0..self.cfg.num_disconnect_packets {
+            self.send_to_client(DisconnectPacket::create(), client_idx)?;
+        }
+        self.on_disconnect(client_idx);
+        self.conn_cache.remove(client_idx);
+        Ok(())
+    }
+    /// Disconnects all clients.
+    pub fn disconnect_all(&mut self) -> Result<()> {
+        log::debug!("server disconnecting all clients");
+        for idx in 0..MAX_CLIENTS {
+            let Some(conn) = self.conn_cache.clients.get_mut(idx) else {
+                continue;
+            };
+            if conn.is_connected() {
+                self.disconnect_client(ClientIndex(idx))?;
+            }
+        }
+        Ok(())
+    }
+    /// Returns an iterator over the connected clients.
     pub fn iter_clients(&self) -> impl Iterator<Item = ClientIndex> + '_ {
         self.conn_cache
             .clients
@@ -811,12 +843,14 @@ impl<T: Transceiver, S> Server<T, S> {
             .enumerate()
             .map(|(idx, _)| ClientIndex(idx))
     }
+    /// Gets the [`ClientId`](ClientId) of a client.
     pub fn client_id(&self, client_idx: ClientIndex) -> Option<ClientId> {
         self.conn_cache
             .clients
             .get(client_idx.0)
             .map(|c| c.client_id)
     }
+    /// Gets the address of a client.
     pub fn client_addr(&self, client_idx: ClientIndex) -> Option<SocketAddr> {
         self.conn_cache.clients.get(client_idx.0).map(|c| c.addr)
     }
