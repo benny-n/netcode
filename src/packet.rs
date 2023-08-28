@@ -73,7 +73,7 @@ pub struct RequestPacket {
     pub protocol_id: u64,
     pub expire_timestamp: u64,
     pub token_nonce: u64,
-    pub token_data: [u8; ConnectTokenPrivate::SIZE],
+    pub token_data: Box<[u8; ConnectTokenPrivate::SIZE]>,
 }
 
 impl RequestPacket {
@@ -88,7 +88,7 @@ impl RequestPacket {
             protocol_id,
             expire_timestamp,
             token_nonce,
-            token_data,
+            token_data: Box::new(token_data),
         })
     }
     pub fn validate(&self, protocol_id: u64, current_timestamp: u64) -> Result<(), Error> {
@@ -109,7 +109,7 @@ impl RequestPacket {
 
     pub fn decrypt_token_data(&mut self, private_key: Key) -> Result<(), NetcodeError> {
         let decrypted = ConnectTokenPrivate::decrypt(
-            &mut self.token_data,
+            &mut self.token_data[..],
             self.protocol_id,
             self.expire_timestamp,
             self.token_nonce,
@@ -128,7 +128,7 @@ impl Bytes for RequestPacket {
         writer.write_u64::<LittleEndian>(self.protocol_id)?;
         writer.write_u64::<LittleEndian>(self.expire_timestamp)?;
         writer.write_u64::<LittleEndian>(self.token_nonce)?;
-        writer.write_all(&self.token_data)?;
+        writer.write_all(&self.token_data[..])?;
         Ok(())
     }
 
@@ -145,7 +145,7 @@ impl Bytes for RequestPacket {
             protocol_id,
             expire_timestamp,
             token_nonce,
-            token_data,
+            token_data: Box::new(token_data),
         })
     }
 }
@@ -280,8 +280,6 @@ impl Bytes for DisconnectPacket {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
-// TODO: think about how to handle this clippy warning (not necessarily a bad thing)
 pub enum Packet<'p> {
     Request(RequestPacket),
     Denied(DeniedPacket),
@@ -525,7 +523,7 @@ mod tests {
             protocol_id,
             expire_timestamp,
             token_nonce: sequence,
-            token_data,
+            token_data: Box::new(token_data),
         });
 
         let mut buf = [0u8; MAX_PACKET_SIZE];
@@ -552,7 +550,7 @@ mod tests {
         assert_eq!(req_pkt.expire_timestamp, expire_timestamp);
         assert_eq!(req_pkt.token_nonce, sequence);
 
-        let mut reader = std::io::Cursor::new(req_pkt.token_data);
+        let mut reader = std::io::Cursor::new(&req_pkt.token_data[..]);
         let connect_token_private = ConnectTokenPrivate::read_from(&mut reader).unwrap();
         assert_eq!(connect_token_private.client_id, client_id);
         assert_eq!(connect_token_private.timeout_seconds, timeout_seconds);

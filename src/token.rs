@@ -34,14 +34,14 @@ pub enum InvalidTokenError {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct AddressList {
+pub struct AddressList {
     addrs: FreeList<SocketAddr, MAX_SERVERS_PER_CONNECT>,
 }
 
 impl AddressList {
     const IPV4: u8 = 1;
     const IPV6: u8 = 2;
-    pub(crate) fn new(addrs: impl ToSocketAddrs) -> Result<Self, Error> {
+    pub fn new(addrs: impl ToSocketAddrs) -> Result<Self, Error> {
         let mut server_addresses = FreeList::new();
 
         for (i, addr) in addrs.to_socket_addrs()?.enumerate() {
@@ -56,10 +56,10 @@ impl AddressList {
             addrs: server_addresses,
         })
     }
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.addrs.len()
     }
-    pub(crate) fn iter(&self) -> FreeListIter<SocketAddr, MAX_SERVERS_PER_CONNECT> {
+    pub fn iter(&self) -> FreeListIter<SocketAddr, MAX_SERVERS_PER_CONNECT> {
         FreeListIter {
             free_list: &self.addrs,
             index: 0,
@@ -130,13 +130,13 @@ impl Bytes for AddressList {
     }
 }
 
-pub(crate) struct ConnectTokenPrivate {
-    pub(crate) client_id: u64,
-    pub(crate) timeout_seconds: i32,
-    pub(crate) server_addresses: AddressList,
-    pub(crate) client_to_server_key: Key,
-    pub(crate) server_to_client_key: Key,
-    pub(crate) user_data: [u8; USER_DATA_SIZE],
+pub struct ConnectTokenPrivate {
+    pub client_id: u64,
+    pub timeout_seconds: i32,
+    pub server_addresses: AddressList,
+    pub client_to_server_key: Key,
+    pub server_to_client_key: Key,
+    pub user_data: [u8; USER_DATA_SIZE],
 }
 
 impl ConnectTokenPrivate {
@@ -222,13 +222,13 @@ impl Bytes for ConnectTokenPrivate {
     }
 }
 
-pub(crate) struct ChallengeToken {
-    pub(crate) client_id: u64,
-    pub(crate) user_data: [u8; USER_DATA_SIZE],
+pub struct ChallengeToken {
+    pub client_id: u64,
+    pub user_data: [u8; USER_DATA_SIZE],
 }
 
 impl ChallengeToken {
-    pub(crate) const SIZE: usize = 300;
+    pub const SIZE: usize = 300;
     pub fn encrypt(&self, sequence: u64, private_key: &Key) -> Result<[u8; Self::SIZE], Error> {
         let mut buf = [0u8; Self::SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
         let mut cursor = io::Cursor::new(&mut buf[..]);
@@ -284,7 +284,7 @@ impl Bytes for ChallengeToken {
 /// let client_id = 123; // globally unique identifier for an authenticated client
 ///
 /// // optional fields
-/// let nonce = 0; // starts at zero and should increase with each connect token generated
+/// let nonce = 0; // starts at zero (default) and should increase with each connect token generated
 /// let expire_seconds = -1; // defaults to 30 seconds, negative for no expiry
 /// let timeout_seconds = -1; // defaults to 15 seconds, negative for no timeout
 /// let user_data = [0u8; 256]; // custom data
@@ -301,6 +301,8 @@ impl Bytes for ChallengeToken {
 /// let token_bytes = connect_token.try_into_bytes().unwrap();
 /// assert_eq!(token_bytes.len(), 2048);
 /// ```
+///
+/// Alternatively, you can use [`Server::token`](struct.Server.html#method.token) to generate a connect token from an already existing [`Server`](crate::Server).
 pub struct ConnectToken {
     pub(crate) version_info: [u8; NETCODE_VERSION.len()],
     pub(crate) protocol_id: u64,
@@ -315,8 +317,6 @@ pub struct ConnectToken {
 }
 
 /// A builder that can be used to generate a connect token.
-///
-/// See [`ConnectToken`](ConnectToken) for more info.
 pub struct ConnectTokenBuilder<A: ToSocketAddrs> {
     protocol_id: u64,
     client_id: u64,

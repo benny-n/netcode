@@ -5,12 +5,12 @@ pub struct FreeList<T: Sized, const N: usize> {
 }
 
 pub struct FreeListIter<'a, T: Sized + Copy, const N: usize> {
-    pub(crate) free_list: &'a FreeList<T, N>,
-    pub(crate) index: usize,
+    pub free_list: &'a FreeList<T, N>,
+    pub index: usize,
 }
 
 impl<T: Sized + Copy, const N: usize> FreeList<T, N> {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             len: 0,
             inner: [None; N],
@@ -19,10 +19,10 @@ impl<T: Sized + Copy, const N: usize> FreeList<T, N> {
 }
 
 impl<T: Sized, const N: usize> FreeList<T, N> {
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
     }
-    pub(crate) fn insert(&mut self, value: T) -> usize {
+    pub fn insert(&mut self, value: T) -> usize {
         if self.len >= N {
             panic!("free list is full");
         }
@@ -37,26 +37,22 @@ impl<T: Sized, const N: usize> FreeList<T, N> {
         index
     }
 
-    pub(crate) fn remove(&mut self, index: usize) {
+    pub fn remove(&mut self, index: usize) {
         if self.inner[index].is_some() {
             self.len -= 1;
             self.inner[index] = None;
         }
     }
 
-    pub(crate) fn replace(&mut self, index: usize, value: T) -> Option<T> {
-        self.inner.get_mut(index).and_then(|x| x.replace(value))
-    }
-
-    pub(crate) fn get(&self, index: usize) -> Option<&T> {
+    pub fn get(&self, index: usize) -> Option<&T> {
         self.inner.get(index).and_then(Option::as_ref)
     }
 
-    pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         self.inner.get_mut(index).and_then(Option::as_mut)
     }
 
-    pub(crate) fn iter(&self) -> FreeListIter<'_, T, N>
+    pub fn iter(&self) -> FreeListIter<'_, T, N>
     where
         T: Copy,
     {

@@ -28,20 +28,18 @@ struct TokenEntry {
 }
 
 struct TokenEntries {
-    list: FreeList<TokenEntry, { MAX_CLIENTS * 8 }>,
+    inner: Vec<TokenEntry>,
 }
 
 impl TokenEntries {
     fn new() -> Self {
-        Self {
-            list: FreeList::new(),
-        }
+        Self { inner: Vec::new() }
     }
     fn find_or_insert(&mut self, entry: TokenEntry) -> bool {
         let (mut oldest, mut matching) = (None, None);
         let mut oldest_time = f64::INFINITY;
         // Perform a linear search for the oldest and matching entries at the same time
-        for (idx, saved_entry) in self.list.iter().enumerate() {
+        for (idx, saved_entry) in self.inner.iter().enumerate() {
             if entry.time < oldest_time {
                 oldest_time = saved_entry.time;
                 oldest = Some(idx);
@@ -52,15 +50,15 @@ impl TokenEntries {
         }
         let Some(oldest) = oldest else {
             // If there is no oldest entry then the list is empty, so just insert the entry
-            self.list.insert(entry);
+            self.inner.push(entry);
             return true;
         };
         if let Some(matching) = matching {
             // Allow reusing tokens only if the address matches
-            self.list[matching].addr == entry.addr
+            self.inner[matching].addr == entry.addr
         } else {
             // If there is no matching entry, replace the oldest one
-            self.list.replace(oldest, entry);
+            self.inner[oldest] = entry;
             true
         }
     }
@@ -70,7 +68,7 @@ impl TokenEntries {
 struct Connection {
     confirmed: bool,
     connected: bool,
-    client_id: u64,
+    client_id: ClientId,
     addr: SocketAddr,
     timeout: i32,
     expire_time: f64,
@@ -102,7 +100,7 @@ impl Connection {
 /// Note that this is not the same as the [`ClientIndex`](ClientIndex), which is used by the server to identify clients.
 pub type ClientId = u64;
 
-/// A newtype over `usize` used by the server to identify clients.
+/// Newtype over `usize` used by the server to identify clients.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ClientIndex(pub(crate) usize);
 
@@ -146,7 +144,7 @@ impl ConnectionCache {
     }
     fn add(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         addr: SocketAddr,
         timeout: i32,
         expire_time: f64,
@@ -694,7 +692,7 @@ impl<T: Transceiver, S> Server<T, S> {
     pub fn addr(&self) -> SocketAddr {
         self.transceiver.addr()
     }
-    /// Creates a connect token builder for a given public server address and client ID.
+    /// Creates a connect token builder for a given client ID.
     /// The builder can be used to configure the token with additional data before generating the final token.
     /// The `generate` method must be called on the builder to generate the final token.
     ///
@@ -718,7 +716,7 @@ impl<T: Transceiver, S> Server<T, S> {
     /// ```
     ///
     /// See [`ConnectTokenBuilder`](ConnectTokenBuilder) for more options.
-    pub fn token(&mut self, client_id: u64) -> ConnectTokenBuilder<SocketAddr> {
+    pub fn token(&mut self, client_id: ClientId) -> ConnectTokenBuilder<SocketAddr> {
         let token_builder = ConnectToken::build(
             self.transceiver.addr(),
             self.protocol_id,

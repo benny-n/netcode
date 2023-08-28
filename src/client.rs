@@ -246,13 +246,8 @@ impl Client<NetcodeSocket> {
     ///     .try_into_bytes()
     ///     .unwrap();
     ///
-    /// // Start the client
     /// let mut client = Client::new(&token_bytes).unwrap();
     /// assert_eq!(client.state(), ClientState::Disconnected);
-    ///
-    /// // Connect to the server
-    /// client.connect();
-    /// assert_eq!(client.state(), ClientState::SendingConnectionRequest);
     /// ```
     pub fn new(token_bytes: &[u8]) -> Result<Self> {
         let client = Client::from_token(token_bytes, ClientConfig::default())?;
@@ -269,28 +264,22 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     /// # Example
     /// ```
     /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
-    /// # struct MyContext;
-    /// // Generate a connection token for the client
-    /// let private_key = netcode::generate_key();
-    /// let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, private_key)
-    ///     .generate()
-    ///     .unwrap()
-    ///     .try_into_bytes()
-    ///     .unwrap();
-    ///
-    /// // Create a client configuration with a context
+    /// # let private_key = netcode::generate_key();
+    /// # let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, private_key)
+    /// #    .generate()
+    /// #    .unwrap()
+    /// #    .try_into_bytes()
+    /// #    .unwrap();
+    /// struct MyContext {};
     /// let cfg = ClientConfig::with_context(MyContext {}).on_state_change(|from, to, _ctx| {
     ///    assert_eq!(from, ClientState::Disconnected);
     ///    assert_eq!(to, ClientState::SendingConnectionRequest);
     /// });
     ///
-    /// // Start the client
     /// let mut client = Client::with_config(&token_bytes, cfg).unwrap();
     /// assert_eq!(client.state(), ClientState::Disconnected);
-    ///
     /// // Connect to the server
     /// client.connect();
-    /// assert_eq!(client.state(), ClientState::SendingConnectionRequest);
     /// ```
     pub fn with_config(token_bytes: &[u8], cfg: ClientConfig<Ctx>) -> Result<Self> {
         let client = Client::from_token(token_bytes, cfg)?;
@@ -414,7 +403,6 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             }
             (Packet::Payload(_), ClientState::Connected) => {
                 log::debug!("client received connection payload packet from server");
-                // netcode_packet_queue_push( &client->packet_receive_queue, packet, sequence );
             }
             (Packet::Disconnect(_), ClientState::Connected) => {
                 log::debug!("client received disconnect packet from server");
