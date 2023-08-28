@@ -19,6 +19,8 @@ use crate::{
 };
 
 pub const MAX_CLIENTS: usize = 256;
+const RECV_BUF_SIZE: usize = 4 * 1024 * 1024;
+const SEND_BUF_SIZE: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct TokenEntry {
@@ -363,7 +365,7 @@ impl Server<NetcodeSocket> {
     /// For a custom configuration, use [`Server::with_config`](Server::with_config) instead.
     pub fn new(bind_addr: impl ToSocketAddrs, protocol_id: u64, private_key: Key) -> Result<Self> {
         let server: Server<_, ()> = Server {
-            transceiver: NetcodeSocket::new(bind_addr)?,
+            transceiver: NetcodeSocket::new(bind_addr, SEND_BUF_SIZE, RECV_BUF_SIZE)?,
             time: 0.0,
             private_key,
             protocol_id,
@@ -405,7 +407,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
         cfg: ServerConfig<Ctx>,
     ) -> Result<Self> {
         let server = Server {
-            transceiver: NetcodeSocket::new(bind_addr)?,
+            transceiver: NetcodeSocket::new(bind_addr, SEND_BUF_SIZE, RECV_BUF_SIZE)?,
             time: 0.0,
             private_key,
             protocol_id,
@@ -936,9 +938,6 @@ pub mod tests {
                 .iter()
                 .filter(|(_, c)| c.is_connected())
                 .map(|(idx, _)| ClientIndex(idx))
-        }
-        pub fn num_clients(&self) -> usize {
-            self.conn_cache.clients.len()
         }
     }
 }

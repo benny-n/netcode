@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -16,6 +16,9 @@ use crate::{
     transceiver::Transceiver,
     MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
 };
+
+const RECV_BUF_SIZE: usize = 256 * 1024;
+const SEND_BUF_SIZE: usize = 256 * 1024;
 
 type Callback<Ctx> = Box<dyn FnMut(ClientState, ClientState, &mut Ctx) + Send + Sync + 'static>;
 /// Configuration for a client.
@@ -215,7 +218,11 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
             }
         };
         Ok(Self {
-            transceiver: NetcodeSocket::default(),
+            transceiver: NetcodeSocket::new(
+                (Ipv4Addr::UNSPECIFIED, 0),
+                SEND_BUF_SIZE,
+                RECV_BUF_SIZE,
+            )?,
             state: ClientState::Disconnected,
             time: 0.0,
             start_time: 0.0,

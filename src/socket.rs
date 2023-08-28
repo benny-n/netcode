@@ -1,12 +1,9 @@
 use std::io::{self};
-use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::transceiver::Transceiver;
-
-const SERVER_SOCKET_RECV_BUF_SIZE: usize = 4 * 1024 * 1024;
-const SERVER_SOCKET_SEND_BUF_SIZE: usize = 4 * 1024 * 1024;
 
 #[derive(thiserror::Error, Debug)]
 #[error("failed to create and bind udp socket: {0}")]
@@ -17,7 +14,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct NetcodeSocket(pub UdpSocket);
 
 impl NetcodeSocket {
-    pub fn new(addr: impl ToSocketAddrs) -> Result<Self> {
+    pub fn new(
+        addr: impl ToSocketAddrs,
+        send_buf_size: usize,
+        recv_buf_size: usize,
+    ) -> Result<Self> {
         let addr = addr.to_socket_addrs()?.next().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "no socket addresses found")
         })?;
@@ -25,17 +26,11 @@ impl NetcodeSocket {
         if addr.is_ipv6() {
             socket.set_only_v6(true)?;
         }
-        socket.set_send_buffer_size(SERVER_SOCKET_SEND_BUF_SIZE)?;
-        socket.set_recv_buffer_size(SERVER_SOCKET_RECV_BUF_SIZE)?;
+        socket.set_send_buffer_size(send_buf_size)?;
+        socket.set_recv_buffer_size(recv_buf_size)?;
         socket.bind(&addr.into())?;
         socket.set_nonblocking(true)?;
         Ok(NetcodeSocket(socket.into()))
-    }
-}
-
-impl Default for NetcodeSocket {
-    fn default() -> Self {
-        Self::new((Ipv4Addr::UNSPECIFIED, 0)).expect("bind to unspecified address should succeed")
     }
 }
 

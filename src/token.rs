@@ -6,7 +6,8 @@ use crate::{
     crypto::{self, Key},
     error::Error,
     free_list::{FreeList, FreeListIter},
-    CONNECTION_TIMEOUT_SEC, NETCODE_VERSION, PRIVATE_KEY_BYTES, USER_DATA_BYTES,
+    CONNECTION_TIMEOUT_SEC, CONNECT_TOKEN_BYTES, NETCODE_VERSION, PRIVATE_KEY_BYTES,
+    USER_DATA_BYTES,
 };
 
 use std::{
@@ -278,7 +279,7 @@ impl Bytes for ChallengeToken {
 /// use netcode::ConnectToken;
 ///
 /// // mandatory fields
-/// let server_address = "127.0.0.1:0"; // the server's public address (can also be multiple addresses)
+/// let server_address = "example.com:5000"; // the server's public address (can also be multiple addresses)
 /// let private_key = netcode::generate_key(); // 32-byte private key, used to encrypt the token
 /// let protocol_id = 0x11223344; // must match the server's protocol id - unique to your app/game
 /// let client_id = 123; // globally unique identifier for an authenticated client
@@ -441,8 +442,8 @@ impl ConnectToken {
     }
 
     /// Tries to convert the token into a 2048-byte array.
-    pub fn try_into_bytes(self) -> Result<[u8; Self::SIZE], io::Error> {
-        let mut buf = [0u8; Self::SIZE];
+    pub fn try_into_bytes(self) -> Result<[u8; CONNECT_TOKEN_BYTES], io::Error> {
+        let mut buf = [0u8; CONNECT_TOKEN_BYTES];
         let mut cursor = io::Cursor::new(&mut buf[..]);
         self.write_to(&mut cursor).map_err(|e| {
             io::Error::new(
