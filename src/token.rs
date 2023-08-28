@@ -1,4 +1,5 @@
 use byteorder::{LittleEndian, WriteBytesExt};
+use chacha20poly1305::{aead::OsRng, AeadCore, XChaCha20Poly1305, XNonce};
 use thiserror::Error;
 
 use crate::{
@@ -157,14 +158,14 @@ impl ConnectTokenPrivate {
         &self,
         protocol_id: u64,
         expire_timestamp: u64,
-        nonce: u64,
+        nonce: XNonce,
         private_key: &Key,
     ) -> Result<[u8; Self::SIZE], Error> {
         let aead = Self::aead(protocol_id, expire_timestamp)?;
         let mut buf = [0u8; Self::SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
         let mut cursor = io::Cursor::new(&mut buf[..]);
         self.write_to(&mut cursor)?;
-        crypto::encrypt(&mut buf, Some(&aead), nonce, private_key)?;
+        crypto::xchacha_encrypt(&mut buf, Some(&aead), nonce, private_key)?;
         Ok(buf)
     }
 
@@ -172,11 +173,11 @@ impl ConnectTokenPrivate {
         encrypted: &mut [u8],
         protocol_id: u64,
         expire_timestamp: u64,
-        nonce: u64,
+        nonce: XNonce,
         private_key: &Key,
     ) -> Result<Self, Error> {
         let aead = Self::aead(protocol_id, expire_timestamp)?;
-        crypto::decrypt(encrypted, Some(&aead), nonce, private_key)?;
+        crypto::xchacha_decrypt(encrypted, Some(&aead), nonce, private_key)?;
         let mut cursor = io::Cursor::new(encrypted);
         Ok(Self::read_from(&mut cursor)?)
     }
@@ -234,7 +235,7 @@ impl ChallengeToken {
         let mut buf = [0u8; Self::SIZE]; // NOTE: token buffer needs 16-bytes overhead for auth tag
         let mut cursor = io::Cursor::new(&mut buf[..]);
         self.write_to(&mut cursor)?;
-        crypto::encrypt(&mut buf, None, sequence, private_key)?;
+        crypto::chacha_encrypt(&mut buf, None, sequence, private_key)?;
         Ok(buf)
     }
 
@@ -243,7 +244,7 @@ impl ChallengeToken {
         sequence: u64,
         private_key: &Key,
     ) -> Result<Self, Error> {
-        crypto::decrypt(encrypted, None, sequence, private_key)?;
+        crypto::chacha_decrypt(encrypted, None, sequence, private_key)?;
         let mut cursor = io::Cursor::new(&encrypted[..]);
         Ok(Self::read_from(&mut cursor)?)
     }
@@ -285,13 +286,11 @@ impl Bytes for ChallengeToken {
 /// let client_id = 123; // globally unique identifier for an authenticated client
 ///
 /// // optional fields
-/// let nonce = 0; // starts at zero (default) and should increase with each connect token generated
 /// let expire_seconds = -1; // defaults to 30 seconds, negative for no expiry
 /// let timeout_seconds = -1; // defaults to 15 seconds, negative for no timeout
 /// let user_data = [0u8; netcode::USER_DATA_BYTES]; // custom data
 ///
 /// let connect_token = ConnectToken::build(server_address, protocol_id, client_id, private_key)
-///     .nonce(nonce)
 ///     .expire_seconds(expire_seconds)
 ///     .timeout_seconds(timeout_seconds)
 ///     .user_data(user_data)
@@ -309,7 +308,7 @@ pub struct ConnectToken {
     pub(crate) protocol_id: u64,
     pub(crate) create_timestamp: u64,
     pub(crate) expire_timestamp: u64,
-    pub(crate) nonce: u64,
+    pub(crate) nonce: XNonce,
     pub(crate) private_data: [u8; ConnectTokenPrivate::SIZE],
     pub(crate) timeout_seconds: i32,
     pub(crate) server_addresses: AddressList,
@@ -323,7 +322,6 @@ pub struct ConnectTokenBuilder<A: ToSocketAddrs> {
     client_id: u64,
     expire_seconds: i32,
     private_key: Key,
-    nonce: u64,
     timeout_seconds: i32,
     public_server_addresses: A,
     internal_server_addresses: Option<AddressList>,
@@ -337,7 +335,6 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
             client_id,
             expire_seconds: TOKEN_EXPIRE_SEC,
             private_key,
-            nonce: 0,
             timeout_seconds: CONNECTION_TIMEOUT_SEC,
             public_server_addresses: server_addresses,
             internal_server_addresses: None,
@@ -361,13 +358,6 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
     /// Sets the user data that will be added to the token, this can be any data you want.
     pub fn user_data(mut self, user_data: [u8; USER_DATA_BYTES]) -> Self {
         self.user_data = user_data;
-        self
-    }
-    /// Sets the nonce that will be used to encrypt the token.
-    ///
-    /// The nonce should be incremented with each token generated.
-    pub fn nonce(mut self, nonce: u64) -> Self {
-        self.nonce = nonce;
         self
     }
     /// Sets the **internal** server addresses in the private data of the token. <br>
@@ -399,6 +389,7 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
         };
         let client_to_server_key = crypto::generate_key();
         let server_to_client_key = crypto::generate_key();
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
 
         let private_data = ConnectTokenPrivate {
             client_id: self.client_id,
@@ -408,19 +399,14 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
             server_to_client_key,
             user_data: self.user_data,
         }
-        .encrypt(
-            self.protocol_id,
-            expire_timestamp,
-            self.nonce,
-            &self.private_key,
-        )?;
+        .encrypt(self.protocol_id, expire_timestamp, nonce, &self.private_key)?;
 
         Ok(ConnectToken {
             version_info: *NETCODE_VERSION,
             protocol_id: self.protocol_id,
             create_timestamp: now,
             expire_timestamp,
-            nonce: self.nonce,
+            nonce,
             private_data,
             timeout_seconds: self.timeout_seconds,
             server_addresses: public_server_addresses,
@@ -463,7 +449,7 @@ impl Bytes for ConnectToken {
         buf.write_u64::<LittleEndian>(self.protocol_id)?;
         buf.write_u64::<LittleEndian>(self.create_timestamp)?;
         buf.write_u64::<LittleEndian>(self.expire_timestamp)?;
-        buf.write_u64::<LittleEndian>(self.nonce)?;
+        buf.write_all(&self.nonce)?;
         buf.write_all(&self.private_data)?;
         buf.write_i32::<LittleEndian>(self.timeout_seconds)?;
         self.server_addresses.write_to(buf)?;
@@ -489,7 +475,9 @@ impl Bytes for ConnectToken {
             return Err(InvalidTokenError::InvalidTimestamp);
         }
 
-        let nonce = reader.read_u64::<LittleEndian>()?;
+        let mut nonce = [0; size_of::<XNonce>()];
+        reader.read_exact(&mut nonce)?;
+        let nonce = XNonce::from_slice(&nonce).to_owned();
 
         let mut private_data = [0; ConnectTokenPrivate::SIZE];
         reader.read_exact(&mut private_data)?;
@@ -527,7 +515,7 @@ mod tests {
         let private_key = crypto::generate_key();
         let protocol_id = 1;
         let expire_timestamp = 2;
-        let nonce = 3;
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
         let client_id = 4;
         let timeout_seconds = 5;
         let server_addresses = AddressList::new(
@@ -609,7 +597,7 @@ mod tests {
         let private_key = crypto::generate_key();
         let protocol_id = 1;
         let expire_timestamp = 2;
-        let nonce = 3;
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
         let client_id = 4;
         let timeout_seconds = 5;
         let server_addresses = AddressList::new(
@@ -686,7 +674,6 @@ mod tests {
     #[test]
     fn connect_token_builder() {
         let protocol_id = 1;
-        let nonce = 3;
         let client_id = 4;
         let server_addresses = "127.0.0.1:12345";
 
@@ -696,7 +683,6 @@ mod tests {
             client_id,
             [0x42; PRIVATE_KEY_BYTES],
         )
-        .nonce(nonce)
         .user_data([0x11; USER_DATA_BYTES])
         .timeout_seconds(5)
         .expire_seconds(6)
@@ -707,7 +693,6 @@ mod tests {
 
         assert_eq!(connect_token.version_info, *NETCODE_VERSION);
         assert_eq!(connect_token.protocol_id, protocol_id);
-        assert_eq!(connect_token.nonce, nonce);
         assert_eq!(connect_token.timeout_seconds, 5);
         assert_eq!(
             connect_token.expire_timestamp,

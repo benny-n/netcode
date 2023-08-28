@@ -854,8 +854,7 @@ impl<T: Transceiver, S> Server<T, S> {
             self.protocol_id,
             client_id,
             self.private_key,
-        )
-        .nonce(self.token_sequence);
+        );
         self.token_sequence += 1;
         token_builder
     }

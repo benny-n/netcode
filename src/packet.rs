@@ -4,6 +4,7 @@ use std::{
 };
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use chacha20poly1305::XNonce;
 
 use crate::{
     bytes::Bytes,
@@ -72,7 +73,7 @@ pub struct RequestPacket {
     pub version_info: [u8; NETCODE_VERSION.len()],
     pub protocol_id: u64,
     pub expire_timestamp: u64,
-    pub token_nonce: u64,
+    pub token_nonce: XNonce,
     pub token_data: Box<[u8; ConnectTokenPrivate::SIZE]>,
 }
 
@@ -80,7 +81,7 @@ impl RequestPacket {
     pub fn create(
         protocol_id: u64,
         expire_timestamp: u64,
-        token_nonce: u64,
+        token_nonce: XNonce,
         token_data: [u8; ConnectTokenPrivate::SIZE],
     ) -> Packet<'static> {
         Packet::Request(RequestPacket {
@@ -127,7 +128,7 @@ impl Bytes for RequestPacket {
         writer.write_all(&self.version_info)?;
         writer.write_u64::<LittleEndian>(self.protocol_id)?;
         writer.write_u64::<LittleEndian>(self.expire_timestamp)?;
-        writer.write_u64::<LittleEndian>(self.token_nonce)?;
+        writer.write_all(&self.token_nonce)?;
         writer.write_all(&self.token_data[..])?;
         Ok(())
     }
@@ -137,7 +138,9 @@ impl Bytes for RequestPacket {
         reader.read_exact(&mut version_info)?;
         let protocol_id = reader.read_u64::<LittleEndian>()?;
         let expire_timestamp = reader.read_u64::<LittleEndian>()?;
-        let token_nonce = reader.read_u64::<LittleEndian>()?;
+        let mut nonce = [0; size_of::<XNonce>()];
+        reader.read_exact(&mut nonce)?;
+        let token_nonce = XNonce::from_slice(&nonce).to_owned();
         let mut token_data = [0; ConnectTokenPrivate::SIZE];
         reader.read_exact(&mut token_data)?;
         Ok(Self {
@@ -376,7 +379,7 @@ impl<'p> Packet<'p> {
         }
         let encryption_end = cursor.position() as usize + MAC_BYTES;
 
-        crypto::encrypt(
+        crypto::chacha_encrypt(
             &mut out[encryption_start..encryption_end],
             Some(&Packet::aead(protocol_id, self.set_prefix(sequence))?),
             sequence,
@@ -428,7 +431,7 @@ impl<'p> Packet<'p> {
 
         let decryption_start = cursor.position() as usize;
         let decryption_end = buf_len;
-        crypto::decrypt(
+        crypto::chacha_decrypt(
             &mut cursor.get_mut()[decryption_start..decryption_end],
             Some(&Packet::aead(protocol_id, prefix_byte)?),
             sequence,
@@ -468,6 +471,8 @@ pub fn sequence_len(sequence: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use chacha20poly1305::{aead::OsRng, AeadCore, XChaCha20Poly1305};
+
     use crate::{crypto::generate_key, token::AddressList, MAX_PACKET_SIZE, USER_DATA_BYTES};
 
     use super::*;
@@ -503,6 +508,7 @@ mod tests {
         let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;
         let expire_timestamp = u64::MAX;
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
         let sequence = 0u64;
         let mut replay_protection = ReplayProtection::new();
         let token_data = ConnectTokenPrivate {
@@ -515,14 +521,14 @@ mod tests {
         };
 
         let token_data = token_data
-            .encrypt(protocol_id, expire_timestamp, sequence, &private_key)
+            .encrypt(protocol_id, expire_timestamp, nonce, &private_key)
             .unwrap();
 
         let packet = Packet::Request(RequestPacket {
             version_info: *NETCODE_VERSION,
             protocol_id,
             expire_timestamp,
-            token_nonce: sequence,
+            token_nonce: nonce,
             token_data: Box::new(token_data),
         });
 
@@ -548,7 +554,7 @@ mod tests {
         assert_eq!(req_pkt.version_info, *NETCODE_VERSION);
         assert_eq!(req_pkt.protocol_id, protocol_id);
         assert_eq!(req_pkt.expire_timestamp, expire_timestamp);
-        assert_eq!(req_pkt.token_nonce, sequence);
+        assert_eq!(req_pkt.token_nonce, nonce);
 
         let mut reader = std::io::Cursor::new(&req_pkt.token_data[..]);
         let connect_token_private = ConnectTokenPrivate::read_from(&mut reader).unwrap();

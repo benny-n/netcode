@@ -1,7 +1,7 @@
 use byteorder::{LittleEndian, WriteBytesExt};
 use chacha20poly1305::{
     aead::{rand_core::RngCore, OsRng},
-    AeadInPlace, ChaCha20Poly1305, KeyInit, Tag,
+    AeadInPlace, ChaCha20Poly1305, KeyInit, Tag, XChaCha20Poly1305, XNonce,
 };
 use std::io;
 
@@ -56,13 +56,13 @@ pub fn try_generate_key() -> Result<Key> {
     Ok(key)
 }
 
-pub fn encrypt(
-    buffer: &mut [u8],
+pub fn chacha_encrypt(
+    buf: &mut [u8],
     associated_data: Option<&[u8]>,
     nonce: u64,
     key: &Key,
 ) -> Result<()> {
-    let size = buffer.len();
+    let size = buf.len();
     if size < MAC_BYTES {
         // Should have 16 bytes of extra space for the MAC
         return Err(Error::BufferSizeMismatch);
@@ -72,29 +72,69 @@ pub fn encrypt(
     let mac = ChaCha20Poly1305::new(key.into()).encrypt_in_place_detached(
         &final_nonce.into(),
         associated_data.unwrap_or_default(),
-        &mut buffer[..size - MAC_BYTES],
+        &mut buf[..size - MAC_BYTES],
     )?;
-    buffer[size - MAC_BYTES..].copy_from_slice(mac.as_ref());
+    buf[size - MAC_BYTES..].copy_from_slice(mac.as_ref());
     Ok(())
 }
 
-pub fn decrypt(
-    buffer: &mut [u8],
+pub fn chacha_decrypt(
+    buf: &mut [u8],
     associated_data: Option<&[u8]>,
     nonce: u64,
     key: &Key,
 ) -> Result<()> {
-    if buffer.len() < MAC_BYTES {
+    if buf.len() < MAC_BYTES {
         // Should already include the MAC
         return Err(Error::BufferSizeMismatch);
     }
     let mut final_nonce = [0; 12];
     io::Cursor::new(&mut final_nonce[4..]).write_u64::<LittleEndian>(nonce)?;
-    let (buffer, mac) = buffer.split_at_mut(buffer.len() - MAC_BYTES);
+    let (buf, mac) = buf.split_at_mut(buf.len() - MAC_BYTES);
     ChaCha20Poly1305::new(key.into()).decrypt_in_place_detached(
         &final_nonce.into(),
         associated_data.unwrap_or_default(),
-        buffer,
+        buf,
+        Tag::from_slice(mac),
+    )?;
+    Ok(())
+}
+
+pub fn xchacha_encrypt(
+    buf: &mut [u8],
+    associated_data: Option<&[u8]>,
+    nonce: XNonce,
+    key: &Key,
+) -> Result<()> {
+    let size = buf.len();
+    if size < MAC_BYTES {
+        // Should have 16 bytes of extra space for the MAC
+        return Err(Error::BufferSizeMismatch);
+    }
+    let mac = XChaCha20Poly1305::new(key.into()).encrypt_in_place_detached(
+        &nonce,
+        associated_data.unwrap_or_default(),
+        &mut buf[..size - MAC_BYTES],
+    )?;
+    buf[size - MAC_BYTES..].copy_from_slice(mac.as_ref());
+    Ok(())
+}
+
+pub fn xchacha_decrypt(
+    buf: &mut [u8],
+    associated_data: Option<&[u8]>,
+    nonce: XNonce,
+    key: &Key,
+) -> Result<()> {
+    if buf.len() < MAC_BYTES {
+        // Should already include the MAC
+        return Err(Error::BufferSizeMismatch);
+    }
+    let (buf, mac) = buf.split_at_mut(buf.len() - MAC_BYTES);
+    XChaCha20Poly1305::new(key.into()).decrypt_in_place_detached(
+        &nonce,
+        associated_data.unwrap_or_default(),
+        buf,
         Tag::from_slice(mac),
     )?;
     Ok(())
@@ -106,23 +146,23 @@ mod tests {
 
     #[test]
     fn buf_too_small() {
-        let mut buffer = [0; 0];
+        let mut buf = [0; 0];
         let nonce = 0;
         let key = generate_key();
-        let result = encrypt(&mut buffer, None, nonce, &key);
+        let result = chacha_encrypt(&mut buf, None, nonce, &key);
         assert!(result.is_err());
     }
 
     #[test]
-    fn encrypt_decrypt_zero_sized_buffer() {
-        let mut buffer = [0u8; MAC_BYTES]; // 16 bytes is the minimum size, which our actual buffer is empty
+    fn encrypt_decrypt_zero_sized_buf() {
+        let mut buf = [0u8; MAC_BYTES]; // 16 bytes is the minimum size, which our actual buf is empty
         let nonce = 0;
         let key = generate_key();
-        encrypt(&mut buffer, None, nonce, &key).unwrap();
+        chacha_encrypt(&mut buf, None, nonce, &key).unwrap();
 
-        // The buffer should have been modified
-        assert_ne!(buffer, [0u8; MAC_BYTES]);
+        // The buf should have been modified
+        assert_ne!(buf, [0u8; MAC_BYTES]);
 
-        decrypt(&mut buffer, None, nonce, &key).unwrap();
+        chacha_decrypt(&mut buf, None, nonce, &key).unwrap();
     }
 }
