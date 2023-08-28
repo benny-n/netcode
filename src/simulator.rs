@@ -128,7 +128,7 @@ impl Transceiver for NetworkSimulator {
 mod tests {
     use crate::{
         client::{Client, ClientState},
-        server::ClientIndex,
+        server::{ClientIndex, MAX_CLIENTS},
         token::ConnectToken,
         CONNECTION_TIMEOUT_SEC,
     };
@@ -159,12 +159,7 @@ mod tests {
 
         let mut server = Server::with_simulator(server_sim, None).unwrap();
 
-        let token = server
-            .token(123u64)
-            .expire_seconds(-1)
-            .timeout_seconds(-1)
-            .generate()
-            .unwrap();
+        let token = server.token(123u64).generate().unwrap();
 
         let mut client = Client::with_simulator(token, client_sim).unwrap();
 
@@ -261,6 +256,78 @@ mod tests {
         }
         assert!(client.is_error());
         assert!(client.state() == ClientState::ConnectionTimedOut);
+
+        // test ConnectionRequestTimedOut
+        client.connect();
+        assert!(client.is_pending());
+
+        loop {
+            client.update(time);
+            client.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_error() {
+                break;
+            }
+
+            time += delta;
+        }
+        assert!(client.state() == ClientState::ConnectionRequestTimedOut);
+
+        // test ChallengeResponseTimedOut
+        client.connect();
+        assert!(client.is_pending());
+
+        loop {
+            if client.state() != ClientState::SendingChallengeResponse {
+                // when client reaches SendingChallengeResponse state, stop updating server
+                server.update(time);
+                server.recv(&mut [0; 1175]).unwrap();
+            }
+            client.update(time);
+            client.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_error() {
+                break;
+            }
+
+            time += delta;
+        }
+        assert!(client.state() == ClientState::ChallengeResponseTimedOut);
+    }
+
+    #[test]
+    fn client_server_disable_timeouts_and_expire() {
+        enable_logging();
+
+        let routing_table = Rc::new(RefCell::new(HashMap::new()));
+        let client_sim = NetworkSimulator::new(40000, routing_table.clone());
+        let server_sim = NetworkSimulator::new(50000, routing_table.clone());
+
+        let mut time = 0.0;
+
+        let mut server = Server::with_simulator(server_sim, None).unwrap();
+        let token = server
+            .token(123u64)
+            .expire_seconds(-1)
+            .timeout_seconds(-1)
+            .generate()
+            .unwrap();
+
+        let mut client = Client::with_simulator(token, client_sim).unwrap();
+
+        client.connect();
+
+        for _ in 0..20 {
+            client.update(time);
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time);
+            server.recv(&mut [0; 1175]).unwrap();
+
+            time += 10000000.0;
+        }
+        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.iter_clients().last().unwrap().0, 0);
+        assert!(client.is_connected());
     }
 
     #[test]
@@ -504,5 +571,205 @@ mod tests {
         assert_eq!(server2.iter_clients().count(), 1);
         assert_eq!(server2.iter_clients().last().unwrap().0, 0);
         assert!(client.is_connected());
+    }
+
+    #[test]
+    fn server_side_disconnect() {
+        enable_logging();
+
+        let routing_table = Rc::new(RefCell::new(HashMap::new()));
+        let client_sim = NetworkSimulator::new(40000, routing_table.clone());
+        let server_sim = NetworkSimulator::new(50000, routing_table.clone());
+
+        let mut time = 0.0;
+        let delta = 1. / 10.;
+
+        let mut server = Server::with_simulator(server_sim, None).unwrap();
+
+        let token = server.token(123u64).generate().unwrap();
+
+        let mut client = Client::with_simulator(token, client_sim).unwrap();
+
+        client.connect();
+
+        // connect client
+        loop {
+            client.update(time);
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time);
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_connected() || client.is_error() {
+                break;
+            }
+
+            time += delta;
+        }
+        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.iter_clients().last().unwrap().0, 0);
+        assert!(client.is_connected());
+
+        // now disconnect client from server and ensure client disconnects
+        server.disconnect_client(ClientIndex(0)).unwrap();
+        loop {
+            client.update(time);
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time);
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_error() {
+                break;
+            }
+
+            if server.iter_clients().count() == 0 {
+                break;
+            }
+
+            time += delta;
+        }
+        assert_eq!(server.iter_clients().count(), 0);
+    }
+
+    #[test]
+    fn client_side_disconnect_reconnect() {
+        enable_logging();
+
+        let routing_table = Rc::new(RefCell::new(HashMap::new()));
+        let client_sim = NetworkSimulator::new(40000, routing_table.clone());
+        let server_sim = NetworkSimulator::new(50000, routing_table.clone());
+
+        let mut time = 0.0;
+        let delta = 1. / 10.;
+
+        let mut server = Server::with_simulator(server_sim, None).unwrap();
+
+        let token = server.token(123u64).generate().unwrap();
+
+        let mut client = Client::with_simulator(token, client_sim).unwrap();
+
+        client.connect();
+
+        // connect client
+        loop {
+            client.update(time);
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time);
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_connected() || client.is_error() {
+                break;
+            }
+
+            time += delta;
+        }
+        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.iter_clients().last().unwrap().0, 0);
+        assert!(client.is_connected());
+
+        // now disconnect client from server and ensure client disconnects
+        client.disconnect().unwrap();
+        loop {
+            client.update(time);
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time);
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_error() {
+                break;
+            }
+
+            if server.iter_clients().count() == 0 {
+                break;
+            }
+
+            time += delta;
+        }
+        assert_eq!(server.iter_clients().count(), 0);
+
+        // test reconnect
+        client.connect();
+        loop {
+            client.update(time);
+            client.recv(&mut [0; 1175]).unwrap();
+            server.update(time);
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if client.is_error() {
+                break;
+            }
+
+            if client.is_connected() && server.iter_clients().count() == 1 {
+                break;
+            }
+
+            time += delta;
+        }
+        assert!(client.is_connected());
+        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.iter_clients().last().unwrap().0, 0);
+    }
+
+    #[test]
+    fn connection_denied() {
+        enable_logging();
+
+        let routing_table = Rc::new(RefCell::new(HashMap::new()));
+        let server_sim = NetworkSimulator::new(50000, routing_table.clone());
+
+        let mut time = 0.0;
+        let delta = 1. / 10.;
+
+        let mut server = Server::with_simulator(server_sim, None).unwrap();
+
+        // start MAX_CLIENTS + 1 clients and ensure the last one is denied
+        let mut clients = Vec::new();
+
+        for i in 0..MAX_CLIENTS + 1 {
+            let token = server
+                .token(i as u64)
+                .expire_seconds(-1)
+                .timeout_seconds(-1)
+                .generate()
+                .unwrap();
+            let client_sim = NetworkSimulator::new(40000 + i as u16, routing_table.clone());
+            let mut client = Client::with_simulator(token, client_sim).unwrap();
+            client.connect();
+            clients.push(client);
+        }
+
+        // connect clients
+        loop {
+            for client in clients.iter_mut() {
+                client.update(time);
+                client.recv(&mut [0; 1175]).unwrap();
+            }
+            server.update(time);
+            server.recv(&mut [0; 1175]).unwrap();
+
+            let connected = server.iter_clients().count();
+            println!("connected: {}", connected);
+            if connected == MAX_CLIENTS {
+                break;
+            }
+
+            time += delta;
+        }
+        // now try to connect one more client and ensure it is denied
+        println!("trying to connect one more client");
+        let last_client = &mut clients[MAX_CLIENTS];
+        loop {
+            last_client.update(time);
+            last_client.recv(&mut [0; 1175]).unwrap();
+            server.update(time);
+            server.recv(&mut [0; 1175]).unwrap();
+
+            if last_client.is_error() {
+                break;
+            }
+
+            time += delta;
+        }
+        assert!(last_client.state() == ClientState::ConnectionDenied);
+        assert!(server.iter_clients().count() == MAX_CLIENTS);
     }
 }
