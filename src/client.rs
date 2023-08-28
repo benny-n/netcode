@@ -18,7 +18,7 @@ use crate::{
 };
 
 type Callback<Ctx> = Box<dyn FnMut(ClientState, ClientState, &mut Ctx) + Send + Sync + 'static>;
-/// Configuration for a client
+/// Configuration for a client.
 ///
 /// * `num_disconnect_packets` - The number of redundant disconnect packets that will be sent to a server when the clients wants to disconnect.
 /// * `packet_send_rate` - The rate at which periodic packets will be sent to the server.
@@ -165,17 +165,16 @@ pub enum ClientState {
 /// client.connect();
 ///
 /// let start = Instant::now();
-/// let tick_rate = 1.0 / 60.0;
+/// let tick_rate = Duration::from_secs_f64(1.0 / 60.0);
 /// loop {
 ///     client.update(start.elapsed().as_secs_f64());
-///     let mut packet = [0; netcode::MAX_PACKET_SIZE];
 ///     if client.is_connected() {
 ///         client.send(b"Hello World!").unwrap();
 ///     }
 ///     if let Some(packet) = client.recv() {
 ///         println!("received packet: {:?}", packet);
 ///     }
-///     thread::sleep(Duration::from_secs_f64(tick_rate));
+///     thread::sleep(tick_rate);
 ///     # break;
 /// }
 /// ```
@@ -253,7 +252,6 @@ impl Client<NetcodeSocket> {
     ///     .unwrap();
     ///
     /// let mut client = Client::new(&token_bytes).unwrap();
-    /// assert_eq!(client.state(), ClientState::Disconnected);
     /// ```
     pub fn new(token_bytes: &[u8]) -> Result<Self> {
         let client = Client::from_token(token_bytes, ClientConfig::default())?;
@@ -283,9 +281,6 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     /// });
     ///
     /// let mut client = Client::with_config(&token_bytes, cfg).unwrap();
-    /// assert_eq!(client.state(), ClientState::Disconnected);
-    /// // Connect to the server
-    /// client.connect();
     /// ```
     pub fn with_config(token_bytes: &[u8], cfg: ClientConfig<Ctx>) -> Result<Self> {
         let client = Client::from_token(token_bytes, cfg)?;
@@ -496,21 +491,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         }
         Ok(())
     }
-    /// Disconnects the client from the server.
-    ///
-    /// The client will send a number of redundant disconnect packets to the server before transitioning to `Disconnected`.
-    pub fn disconnect(&mut self) -> Result<()> {
-        log::debug!(
-            "client sending {} disconnect packets to server",
-            self.cfg.num_disconnect_packets
-        );
-        for _ in 0..self.cfg.num_disconnect_packets {
-            self.send_packet(DisconnectPacket::create())?;
-        }
-        self.reset(ClientState::Disconnected);
-        Ok(())
-    }
-    /// Connects the client to the server.
+    /// Prepares the client to connect to the server.
     ///
     /// This function does not perform any IO, it only readies the client to send/receive packets on the next call to [`update`](Client::update). <br>
     pub fn connect(&mut self) {
@@ -523,29 +504,6 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             self.token.server_addresses.len()
         );
     }
-    /// Gets the local `SocketAddr` that the client is bound to.
-    pub fn addr(&self) -> SocketAddr {
-        self.transceiver.addr()
-    }
-    /// Gets the current state of the client.
-    pub fn state(&self) -> ClientState {
-        self.state
-    }
-    /// Returns true if the client is in an error state.
-    pub fn is_error(&self) -> bool {
-        self.state < ClientState::Disconnected
-    }
-    /// Returns true if the client is in a pending state.
-    pub fn is_pending(&self) -> bool {
-        matches!(
-            self.state,
-            ClientState::SendingConnectionRequest | ClientState::SendingChallengeResponse
-        )
-    }
-    /// Returns true if the client is connected to a server.
-    pub fn is_connected(&self) -> bool {
-        matches!(self.state, ClientState::Connected)
-    }
     /// Updates the client.
     ///
     /// * Updates the client's elapsed time.
@@ -557,7 +515,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
     ///
     /// # Panics
     /// Panics if the client can't send or receive packets.
-    /// For a non-panicking version, use [`try_update`](Server::try_update).
+    /// For a non-panicking version, use [`try_update`](Client::try_update).
     pub fn update(&mut self, time: f64) {
         self.try_update(time)
             .expect("send/recv error while updating client")
@@ -589,13 +547,14 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
     /// client.connect();
     ///
     /// let start = Instant::now();
-    /// let tick_rate = 1.0 / 60.0;
+    /// let tick_rate = Duration::from_secs_f64(1.0 / 60.0);
     /// loop {
     ///     client.update(start.elapsed().as_secs_f64());
     ///     if let Some(packet) = client.recv() {
     ///         // ...
     ///     }
     ///     # break;
+    ///     thread::sleep(tick_rate);
     /// }
     /// ```
     pub fn recv(&mut self) -> Option<Vec<u8>> {
@@ -613,6 +572,45 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         }
         self.send_packet(PayloadPacket::create(buf))?;
         Ok(())
+    }
+    /// Disconnects the client from the server.
+    ///
+    /// The client will send a number of redundant disconnect packets to the server before transitioning to `Disconnected`.
+    pub fn disconnect(&mut self) -> Result<()> {
+        log::debug!(
+            "client sending {} disconnect packets to server",
+            self.cfg.num_disconnect_packets
+        );
+        for _ in 0..self.cfg.num_disconnect_packets {
+            self.send_packet(DisconnectPacket::create())?;
+        }
+        self.reset(ClientState::Disconnected);
+        Ok(())
+    }
+    /// Gets the local `SocketAddr` that the client is bound to.
+    pub fn addr(&self) -> SocketAddr {
+        self.transceiver.addr()
+    }
+    /// Gets the current state of the client.
+    pub fn state(&self) -> ClientState {
+        self.state
+    }
+    /// Returns true if the client is in an error state.
+    pub fn is_error(&self) -> bool {
+        self.state < ClientState::Disconnected
+    }
+    /// Returns true if the client is in a pending state.
+    pub fn is_pending(&self) -> bool {
+        self.state == ClientState::SendingConnectionRequest
+            || self.state == ClientState::SendingChallengeResponse
+    }
+    /// Returns true if the client is connected to a server.
+    pub fn is_connected(&self) -> bool {
+        self.state == ClientState::Connected
+    }
+    /// Returns true if the client is disconnected from the server.
+    pub fn is_disconnected(&self) -> bool {
+        self.state == ClientState::Disconnected
     }
 }
 

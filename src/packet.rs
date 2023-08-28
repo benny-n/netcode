@@ -11,7 +11,7 @@ use crate::{
     error::Error as NetcodeError,
     replay::ReplayProtection,
     token::{ChallengeToken, ConnectTokenPrivate},
-    MAC_SIZE, MAX_PKT_BUF_SIZE, NETCODE_VERSION,
+    MAC_BYTES, MAX_PKT_BUF_SIZE, NETCODE_VERSION,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -371,10 +371,10 @@ impl<'p> Packet<'p> {
             Packet::Payload(PayloadPacket { buf }) => cursor.write_all(buf)?,
             _ => unreachable!(), // Packet::Request variant is handled above
         }
-        if cursor.position() as usize > len - MAC_SIZE {
+        if cursor.position() as usize > len - MAC_BYTES {
             return Err(Error::TooLarge.into());
         }
-        let encryption_end = cursor.position() as usize + MAC_SIZE;
+        let encryption_end = cursor.position() as usize + MAC_BYTES;
 
         crypto::encrypt(
             &mut out[encryption_start..encryption_end],
@@ -413,7 +413,7 @@ impl<'p> Packet<'p> {
             packet.decrypt_token_data(key)?;
             return Ok(Packet::Request(packet));
         }
-        if buf_len < size_of::<u8>() + sequence_len + MAC_SIZE {
+        if buf_len < size_of::<u8>() + sequence_len + MAC_BYTES {
             // should at least have prefix byte, sequence and mac
             return Err(Error::TooSmall.into());
         }
@@ -451,9 +451,9 @@ impl<'p> Packet<'p> {
             Packet::KEEP_ALIVE => Packet::KeepAlive(KeepAlivePacket::read_from(&mut cursor)?),
             Packet::DISCONNECT => Packet::Disconnect(DisconnectPacket::read_from(&mut cursor)?),
             Packet::PAYLOAD => {
-                buf.copy_within(decryption_start..(decryption_end - MAC_SIZE), 0);
+                buf.copy_within(decryption_start..(decryption_end - MAC_BYTES), 0);
                 Packet::Payload(PayloadPacket {
-                    buf: &buf[..decryption_end - decryption_start - MAC_SIZE],
+                    buf: &buf[..decryption_end - decryption_start - MAC_BYTES],
                 })
             }
             t => return Err(Error::InvalidType(t).into()),
@@ -468,7 +468,7 @@ pub fn sequence_len(sequence: u64) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{crypto::generate_key, token::AddressList, MAX_PACKET_SIZE, USER_DATA_SIZE};
+    use crate::{crypto::generate_key, token::AddressList, MAX_PACKET_SIZE, USER_DATA_BYTES};
 
     use super::*;
 
@@ -498,7 +498,7 @@ mod tests {
         let client_id = 0x1234;
         let timeout_seconds = -1;
         let server_addresses = AddressList::new("127.0.0.1:40000").unwrap();
-        let user_data = [0u8; USER_DATA_SIZE];
+        let user_data = [0u8; USER_DATA_BYTES];
         let private_key = generate_key();
         let packet_key = generate_key();
         let protocol_id = 0x1234_5678_9abc_def0;

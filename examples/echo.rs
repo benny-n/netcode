@@ -44,7 +44,7 @@ fn main() {
     let buf = token.try_into_bytes().unwrap();
 
     let start = Instant::now();
-    let tick_rate = 1.0 / 60.0;
+    let tick_rate = Duration::from_secs_f64(1.0 / 60.0);
 
     let server_thread = thread::spawn(move || loop {
         let now = start.elapsed().as_secs_f64();
@@ -65,7 +65,7 @@ fn main() {
             }
             Err(_) => continue,
         }
-        thread::sleep(Duration::from_secs_f64(tick_rate));
+        thread::sleep(tick_rate);
     });
 
     let mut client = Client::new(&buf).unwrap();
@@ -80,8 +80,8 @@ fn main() {
             println!("echoed back: {}", std::str::from_utf8(&packet).unwrap());
         }
         if let ClientState::Connected = client.state() {
-            match rx.recv_timeout(Duration::from_secs_f64(tick_rate)) {
-                Ok(msg) if msg == "dc" => {
+            match rx.recv_timeout(tick_rate) {
+                Ok(msg) if msg == "q" => {
                     client.disconnect().unwrap();
                     break;
                 }
@@ -94,13 +94,13 @@ fn main() {
                 Err(_) => break,
             }
         }
-        thread::sleep(Duration::from_secs_f64(tick_rate));
+        thread::sleep(tick_rate);
     });
 
     for line in io::stdin().lock().lines() {
         let input = line.unwrap();
         tx.send(input.clone()).unwrap();
-        if input == "dc" {
+        if input == "q" {
             break;
         }
     }

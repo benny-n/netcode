@@ -128,6 +128,7 @@ impl Transceiver for NetworkSimulator {
 mod tests {
     use crate::{
         client::{Client, ClientState},
+        generate_key,
         server::{ClientIndex, MAX_CLIENTS},
         token::ConnectToken,
         CONNECTION_TIMEOUT_SEC,
@@ -519,7 +520,7 @@ mod tests {
         let mut time = 0.0;
         let delta = 1. / 10.;
 
-        let private_key = [42u8; 32];
+        let private_key = generate_key();
         let mut server1 = Server::with_simulator(server1_sim, Some(private_key)).unwrap();
         let mut server2 = Server::with_simulator(server2_sim, Some(private_key)).unwrap();
 

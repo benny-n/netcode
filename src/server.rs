@@ -15,7 +15,7 @@ use crate::{
     socket::NetcodeSocket,
     token::{ChallengeToken, ConnectToken, ConnectTokenBuilder, ConnectTokenPrivate},
     transceiver::Transceiver,
-    MAC_SIZE, MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
+    MAC_BYTES, MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
 };
 
 pub const MAX_CLIENTS: usize = 256;
@@ -328,21 +328,20 @@ impl<Ctx> ServerConfig<Ctx> {
 /// # use std::net::{SocketAddr, Ipv4Addr};
 /// # use std::time::{Instant, Duration};
 /// # use std::thread;
-/// # let private_key = netcode::generate_key();
-/// # let protocol_id = 0x123456789ABCDEF0;
-/// # let addr = "127.0.0.1:41235";
+/// let private_key = netcode::generate_key();
+/// let protocol_id = 0x123456789ABCDEF0;
+/// let addr = "127.0.0.1:41235";
 /// let mut server = Server::new(addr, protocol_id, private_key).unwrap();
 ///
 /// let start = Instant::now();
-/// let tick_rate_secs = 1.0 / 60.0;
+/// let tick_rate = Duration::from_secs_f64(1.0 / 60.0);
 ///
 /// loop {
 ///     server.update(start.elapsed().as_secs_f64());
-///     let mut packet = [0; netcode::MAX_PACKET_SIZE];
-///     if let Some((received, _)) = server.recv() {
+///     if let Some((received, from)) = server.recv() {
 ///         // ...
 ///     }
-///     thread::sleep(Duration::from_secs_f64(tick_rate_secs));
+///     thread::sleep(tick_rate);
 ///     # break;
 /// }
 /// ```
@@ -366,17 +365,6 @@ impl Server<NetcodeSocket> {
     /// Create a new server with a default configuration.
     ///
     /// For a custom configuration, use [`Server::with_config`](Server::with_config) instead.
-    ///
-    /// # Example
-    /// ```
-    /// use netcode::Server;
-    /// use std::net::{SocketAddr, Ipv4Addr};
-    ///
-    /// let private_key = netcode::generate_key();
-    /// let protocol_id = 0x123456789ABCDEF0;
-    /// let addr = "127.0.0.1:41234";
-    /// let server = Server::new(addr, protocol_id, private_key).unwrap();
-    /// ```
     pub fn new(bind_addr: impl ToSocketAddrs, protocol_id: u64, private_key: Key) -> Result<Self> {
         let server: Server<_, ()> = Server {
             transceiver: NetcodeSocket::new(bind_addr)?,
@@ -571,7 +559,8 @@ impl<T: Transceiver, S> Server<T, S> {
         let entry = TokenEntry {
             time: self.time,
             addr: from_addr,
-            mac: packet.token_data[ConnectTokenPrivate::SIZE - MAC_SIZE..ConnectTokenPrivate::SIZE]
+            mac: packet.token_data
+                [ConnectTokenPrivate::SIZE - MAC_BYTES..ConnectTokenPrivate::SIZE]
                 .try_into()
                 .expect("valid MAC size"),
         };
@@ -770,45 +759,6 @@ impl<T: Transceiver, S> Server<T, S> {
         }
         Ok(())
     }
-    /// Gets the local `SocketAddr` this server is bound to.
-    pub fn addr(&self) -> SocketAddr {
-        self.transceiver.addr()
-    }
-    /// Creates a connect token builder for a given client ID.
-    /// The builder can be used to configure the token with additional data before generating the final token.
-    /// The `generate` method must be called on the builder to generate the final token.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use netcode::{Server, ServerConfig};
-    /// # use std::net::{SocketAddr, Ipv4Addr};
-    ///  
-    /// let private_key = netcode::generate_key();
-    /// let protocol_id = 0x123456789ABCDEF0;
-    /// let bind_addr = "0.0.0.0:0";
-    /// let mut server = Server::new(bind_addr, protocol_id, private_key).unwrap();
-    ///
-    /// let client_id = 123u64;
-    /// let token = server.token(client_id)
-    ///     .expire_seconds(60)  // defaults to 30 seconds, negative for no expiry
-    ///     .timeout_seconds(-1) // defaults to 15 seconds, negative for no timeout
-    ///     .generate()
-    ///     .unwrap();
-    /// ```
-    ///
-    /// See [`ConnectTokenBuilder`](ConnectTokenBuilder) for more options.
-    pub fn token(&mut self, client_id: ClientId) -> ConnectTokenBuilder<SocketAddr> {
-        let token_builder = ConnectToken::build(
-            self.transceiver.addr(),
-            self.protocol_id,
-            client_id,
-            self.private_key,
-        )
-        .nonce(self.token_sequence);
-        self.token_sequence += 1;
-        token_builder
-    }
     /// Updates the server.
     ///
     /// * Updates the server's elapsed time.
@@ -856,7 +806,7 @@ impl<T: Transceiver, S> Server<T, S> {
     ///    let now = start.elapsed().as_secs_f64();
     ///    server.update(now);
     ///    let mut packet_buf = [0u8; netcode::MAX_PACKET_SIZE];
-    ///    while let Some((packet, _)) = server.recv() {
+    ///    while let Some((packet, from)) = server.recv() {
     ///        // ...
     ///    }
     ///    # break;
@@ -891,6 +841,41 @@ impl<T: Transceiver, S> Server<T, S> {
         let packet = PayloadPacket::create(buf);
         self.send_to_client(packet, client_idx)
     }
+    /// Creates a connect token builder for a given client ID.
+    /// The builder can be used to configure the token with additional data before generating the final token.
+    /// The `generate` method must be called on the builder to generate the final token.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use netcode::{Server, ServerConfig};
+    /// # use std::net::{SocketAddr, Ipv4Addr};
+    ///  
+    /// let private_key = netcode::generate_key();
+    /// let protocol_id = 0x123456789ABCDEF0;
+    /// let bind_addr = "0.0.0.0:0";
+    /// let mut server = Server::new(bind_addr, protocol_id, private_key).unwrap();
+    ///
+    /// let client_id = 123u64;
+    /// let token = server.token(client_id)
+    ///     .expire_seconds(60)  // defaults to 30 seconds, negative for no expiry
+    ///     .timeout_seconds(-1) // defaults to 15 seconds, negative for no timeout
+    ///     .generate()
+    ///     .unwrap();
+    /// ```
+    ///
+    /// See [`ConnectTokenBuilder`](ConnectTokenBuilder) for more options.
+    pub fn token(&mut self, client_id: ClientId) -> ConnectTokenBuilder<SocketAddr> {
+        let token_builder = ConnectToken::build(
+            self.transceiver.addr(),
+            self.protocol_id,
+            client_id,
+            self.private_key,
+        )
+        .nonce(self.token_sequence);
+        self.token_sequence += 1;
+        token_builder
+    }
     /// Disconnects a client.
     ///
     /// The server will send a number of redundant disconnect packets to the client, and then remove its connection info.
@@ -915,6 +900,10 @@ impl<T: Transceiver, S> Server<T, S> {
             }
         }
         Ok(())
+    }
+    /// Gets the local `SocketAddr` this server is bound to.
+    pub fn addr(&self) -> SocketAddr {
+        self.transceiver.addr()
     }
     /// Returns an iterator over the connected clients.
     pub fn iter_clients(&self) -> impl Iterator<Item = ClientIndex> + '_ {

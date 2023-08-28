@@ -50,18 +50,17 @@
 //! let private_key = netcode::generate_key(); // you can also provide your own key
 //! let mut server = Server::new("127.0.0.1:12345", protocol_id, private_key).unwrap();
 //!
-//!
 //! // Run the server at 60Hz
 //! let start = Instant::now();
+//! let tick_rate = Duration::from_secs_f64(1.0 / 60.0);
 //! loop {
-//!     thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
-//!     let now = start.elapsed().as_secs_f64();
-//!     server.update(now);
-//!     let mut packet = [0; MAX_PACKET_SIZE];
-//!     while let Some((received, _)) = server.recv() {
+//!     let elapsed = start.elapsed().as_secs_f64();
+//!     server.update(elapsed);
+//!     while let Some((packet, from)) = server.recv() {
 //!        // ...
 //!     }
 //!     # break;
+//!     thread::sleep(tick_rate);
 //! }
 //! ```
 //!
@@ -85,7 +84,6 @@
 //! let private_key = netcode::generate_key(); // you can also provide your own key
 //! let client_id = 123u64; // globally unique identifier for an authenticated client
 //! let server_address = "127.0.0.1:12345"; // the server's public address (can also be multiple addresses)
-//!
 //! let connect_token = ConnectToken::build("127.0.0.1:12345", protocol_id, client_id, private_key)
 //!     .generate()
 //!     .unwrap();
@@ -97,50 +95,50 @@
 //!
 //! // Run the client at 60Hz
 //! let start = Instant::now();
+//! let tick_rate = Duration::from_secs_f64(1.0 / 60.0);
 //! loop {
-//!     thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
-//!     let now = start.elapsed().as_secs_f64();
-//!     client.try_update(now).ok();
+//!     let elapsed = start.elapsed().as_secs_f64();
+//!     client.try_update(elapsed).ok();
 //!     if let Some(packet) = client.recv() {
 //!         // ...
 //!     }
 //!     # break;
+//!     thread::sleep(tick_rate);
 //! }
 //! ```
 
 mod bytes;
+mod client;
 mod crypto;
+mod error;
 mod free_list;
 mod packet;
 mod replay;
+mod server;
 mod socket;
+mod token;
 mod transceiver;
 
 #[cfg(test)]
 mod simulator;
 
-mod client;
-mod error;
-mod server;
-mod token;
-
-pub(crate) const MAC_SIZE: usize = 16;
+pub(crate) const MAC_BYTES: usize = 16;
 pub(crate) const MAX_PKT_BUF_SIZE: usize = 1300;
 pub(crate) const CONNECTION_TIMEOUT_SEC: i32 = 15;
 pub(crate) const PACKET_SEND_RATE_SEC: f64 = 1.0 / 10.0;
-pub(crate) const PRIVATE_KEY_SIZE: usize = 32;
 
-// Re-exports
 pub use crate::client::{Client, ClientConfig, ClientState};
 pub use crate::crypto::{generate_key, try_generate_key, Key};
 pub use crate::error::{Error, Result};
 pub use crate::server::{ClientId, ClientIndex, Server, ServerConfig};
 pub use crate::token::{ConnectToken, ConnectTokenBuilder, InvalidTokenError};
 
-// Public constants
-
-/// The size of the user data in a connect token.
-pub const USER_DATA_SIZE: usize = 256;
+/// The size of a private key in bytes.
+pub const PRIVATE_KEY_BYTES: usize = 32;
+/// The size of the user data in a connect token in bytes.
+pub const USER_DATA_BYTES: usize = 256;
+/// The size of the connect token in bytes.
+pub const CONNECT_TOKEN_BYTES: usize = 2048;
 /// The maximum size of a packet in bytes.
 pub const MAX_PACKET_SIZE: usize = 1200;
 /// The version of the netcode protocol implemented by this crate.
