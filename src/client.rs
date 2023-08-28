@@ -108,14 +108,14 @@ impl<Ctx> ClientConfig<Ctx> {
 /// While in `SendingChallengeResponse`, when the client receives a connection keep-alive packet from the server,
 /// it stores the client index and max clients in the packet, and transitions to `Connected`.
 ///
-/// Any connection payload packets received prior to `Connected` are discarded.
+/// Any payload packets received prior to `Connected` are discarded.
 ///
 /// `Connected` is the final stage in the connection process and represents a successful connection to the server.
 ///
 /// While in this state:
 ///
-///  - The client application may send connection payload packets to the server.
-///  - In the absence of connection payload packets sent by the client application, the client generates and sends connection keep-alive packets
+///  - The client application may send payload packets to the server.
+///  - In the absence of payload packets sent by the client application, the client generates and sends connection keep-alive packets
 ///    to the server at some rate (default is 10HZ, can be overridden in [`ClientConfig`](ClientConfig)).
 ///  - If no payload or keep-alive packets are received from the server within the timeout period specified in the connect token,
 ///    the client transitions to `ConnectionTimedOut`.
@@ -401,7 +401,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
                 log::info!("client connected to server");
             }
             (Packet::Payload(pkt), ClientState::Connected) => {
-                log::debug!("client received connection payload packet from server");
+                log::debug!("client received payload packet from server");
                 self.packet_queue.push_back(pkt.buf.to_vec());
             }
             (Packet::Disconnect(_), ClientState::Connected) => {

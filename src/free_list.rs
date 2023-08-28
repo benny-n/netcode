@@ -22,9 +22,6 @@ impl<T: Sized, const N: usize> FreeList<T, N> {
     pub fn len(&self) -> usize {
         self.len
     }
-    pub fn capacity(&self) -> usize {
-        N
-    }
     pub fn insert(&mut self, value: T) -> usize {
         if self.len >= N {
             panic!("free list is full");

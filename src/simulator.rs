@@ -605,7 +605,7 @@ mod tests {
         assert!(client.is_connected());
 
         // now disconnect client from server and ensure client disconnects
-        server.disconnect_client(ClientIndex(0)).unwrap();
+        server.disconnect(ClientIndex(0)).unwrap();
         loop {
             client.update(time);
             server.update(time);
@@ -712,12 +712,7 @@ mod tests {
         let mut clients = Vec::new();
 
         for i in 0..MAX_CLIENTS + 1 {
-            let token = server
-                .token(i as u64)
-                .expire_seconds(-1)
-                .timeout_seconds(10000)
-                .generate()
-                .unwrap();
+            let token = server.token(i as u64).generate().unwrap();
             let client_sim = NetworkSimulator::new(40000 + i as u16, routing_table.clone());
             let mut client = Client::with_simulator(token, client_sim).unwrap();
             client.connect();
@@ -726,7 +721,7 @@ mod tests {
 
         // connect clients
         loop {
-            for client in clients.iter_mut() {
+            for client in clients.iter_mut().take(MAX_CLIENTS) {
                 client.update(time);
             }
             server.update(time);
@@ -739,30 +734,19 @@ mod tests {
             time += delta;
         }
 
-        // find the one client that is not connected
-        let c = clients.into_iter().filter(|c| !c.is_connected());
-        // assert that exactly one client is not connected
-        let mut denied_client = c.collect::<Vec<_>>();
-        assert_eq!(denied_client.len(), 1);
-        let mut denied_client = denied_client.pop().unwrap();
-        // if the client is already denied, we are done
-        if denied_client.state() == ClientState::ConnectionDenied {
-            return;
-        }
-        // otherwise it still must be in a pending state
-        assert!(denied_client.is_pending());
-        // now wait for the client to be denied
+        // now try to connect one more client and ensure it is denied
+        let mut last_client = clients.pop().unwrap();
         loop {
-            denied_client.update(time);
+            last_client.update(time);
             server.update(time);
 
-            if denied_client.is_error() {
+            if last_client.is_error() {
                 break;
             }
 
             time += delta;
         }
-        assert!(denied_client.state() == ClientState::ConnectionDenied);
+        assert!(last_client.state() == ClientState::ConnectionDenied);
         assert!(server.iter_clients().count() == MAX_CLIENTS);
     }
 }

@@ -11,6 +11,8 @@ pub enum Error {
     SizeMismatch(usize, usize),
     #[error("tried to send a packet to a client that doesn't exist")]
     ClientNotFound,
+    #[error("tried to send a packet to a client that isn't connected")]
+    ClientNotConnected,
     #[error("clock went backwards (did you invent a time machine?): {0}")]
     SystemTime(#[from] std::time::SystemTimeError),
     #[error("invalid connect token: {0}")]
