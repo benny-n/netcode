@@ -18,7 +18,7 @@ use crate::{
     MAC_SIZE, MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
 };
 
-const MAX_CLIENTS: usize = 256;
+pub const MAX_CLIENTS: usize = 256;
 
 #[derive(Clone, Copy)]
 struct TokenEntry {
@@ -194,13 +194,11 @@ impl ConnectionCache {
     fn find_by_addr(&self, addr: &SocketAddr) -> Option<ClientIndex> {
         self.clients
             .iter()
-            .enumerate()
             .find_map(|(idx, conn)| (conn.addr == *addr).then_some(ClientIndex(idx)))
     }
     fn find_by_id(&self, client_id: ClientId) -> Option<ClientIndex> {
         self.clients
             .iter()
-            .enumerate()
             .find_map(|(idx, conn)| (conn.client_id == client_id).then_some(ClientIndex(idx)))
     }
     fn is_connection_expired(conn: &Connection, time: f64) -> bool {
@@ -526,7 +524,7 @@ impl<T: Transceiver, S> Server<T, S> {
         if !token
             .server_addresses
             .iter()
-            .any(|addr| addr == self.transceiver.addr())
+            .any(|(_, addr)| addr == self.transceiver.addr())
         {
             log::debug!(
                 "server ignored connection request. server address not in connect token whitelist"
@@ -545,7 +543,12 @@ impl<T: Transceiver, S> Server<T, S> {
         if self
             .conn_cache
             .find_by_id(token.client_id)
-            .is_some_and(|idx| self.conn_cache.clients[idx.0].is_connected())
+            .is_some_and(|idx| {
+                self.conn_cache
+                    .clients
+                    .get(idx.0)
+                    .is_some_and(|&conn| conn.is_connected())
+            })
         {
             log::debug!(
                 "server ignored connection request. a client with this id is already connected"
@@ -613,13 +616,12 @@ impl<T: Transceiver, S> Server<T, S> {
             log::debug!("server ignored connection response. failed to decrypt challenge token");
             return Ok(());
         };
-        let num_clients = self.conn_cache.clients.len();
         let Some(idx) = self.conn_cache.find_by_id(challenge_token.client_id) else {
             log::debug!("server ignored connection response. no packet send key");
             return Ok(());
         };
-        if num_clients >= self.max_clients {
-            log::debug!("server denied connection request. server is full");
+        if self.iter_clients().count() >= self.max_clients {
+            log::debug!("server denied connection response. server is full");
             self.send_to_addr(
                 DeniedPacket::create(),
                 from_addr,
@@ -877,8 +879,7 @@ impl<T: Transceiver, S> Server<T, S> {
         self.conn_cache
             .clients
             .iter()
-            .filter(|c| c.is_connected())
-            .enumerate()
+            .filter(|(_, c)| c.is_connected())
             .map(|(idx, _)| ClientIndex(idx))
     }
     /// Gets the [`ClientId`](ClientId) of a client.

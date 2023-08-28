@@ -80,7 +80,7 @@ impl Bytes for AddressList {
     type Error = InvalidTokenError;
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), InvalidTokenError> {
         buf.write_u32::<LittleEndian>(self.len() as u32)?;
-        for addr in self.iter() {
+        for (_, addr) in self.iter() {
             match addr {
                 SocketAddr::V4(addr_v4) => {
                     buf.write_u8(Self::IPV4)?;
@@ -716,7 +716,7 @@ mod tests {
             .server_addresses
             .iter()
             .zip(server_addresses.to_socket_addrs().into_iter().flatten())
-            .for_each(|(have, expected)| {
+            .for_each(|((_, have), expected)| {
                 assert_eq!(have, expected);
             });
     }

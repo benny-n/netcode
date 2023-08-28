@@ -78,14 +78,14 @@ impl<T: Sized, const N: usize> std::ops::IndexMut<usize> for FreeList<T, N> {
 }
 
 impl<'a, T: Sized + Copy, const N: usize> Iterator for FreeListIter<'a, T, N> {
-    type Item = T;
+    type Item = (usize, T);
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.index < N {
             let index = self.index;
             self.index += 1;
             if let Some(value) = self.free_list.get(index) {
-                return Some(*value);
+                return Some((index, *value));
             }
         }
         None

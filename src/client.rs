@@ -379,7 +379,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         }
         match (packet, self.state) {
             (
-                Packet::Disconnect(_),
+                Packet::Denied(_),
                 ClientState::SendingConnectionRequest | ClientState::SendingChallengeResponse,
             ) => {
                 self.should_disconnect = true;
@@ -590,9 +590,11 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
 
 #[cfg(test)]
 mod tests {
+    use byteorder::{LittleEndian, WriteBytesExt};
+
     use super::*;
     use crate::simulator::NetworkSimulator;
-    use crate::NETCODE_VERSION;
+    use crate::{InvalidTokenError, NETCODE_VERSION};
     use std::io::Write;
     impl Client<NetworkSimulator> {
         pub fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
@@ -623,19 +625,68 @@ mod tests {
         let mut token_bytes = [0u8; ConnectToken::SIZE];
         let mut cursor = std::io::Cursor::new(&mut token_bytes[..]);
         cursor.write_all(b"NETCODE VERSION 1.00\0").unwrap();
-        let Err(err) = Client::new(&token_bytes) else {
-            panic!("expected error");
-        };
-        assert_eq!("invalid connect token: invalid version", err.to_string());
+        let res = Client::new(&token_bytes);
+        assert!(matches!(
+            res,
+            Err(Error::InvalidToken(InvalidTokenError::InvalidVersion))
+        ));
         let mut token_bytes = [0u8; ConnectToken::SIZE];
         let mut cursor = std::io::Cursor::new(&mut token_bytes[..]);
         cursor.write_all(NETCODE_VERSION).unwrap();
-        let Err(err) = Client::new(&token_bytes) else {
-            panic!("expected error");
-        };
-        assert_eq!(
-            "invalid connect token: address list length is out of range 1-32: 0",
-            err.to_string()
-        );
+        let res = Client::new(&token_bytes);
+        assert!(matches!(
+            res,
+            Err(Error::InvalidToken(InvalidTokenError::AddressListLength(0)))
+        ));
+        let mut token_bytes = [0u8; ConnectToken::SIZE];
+        let mut cursor = std::io::Cursor::new(&mut token_bytes[..]);
+        cursor.write_all(NETCODE_VERSION).unwrap();
+        cursor.write_u64::<LittleEndian>(0).unwrap(); // protocol id
+        cursor.write_u64::<LittleEndian>(2).unwrap(); // create timestamp
+        cursor.write_u64::<LittleEndian>(1).unwrap(); // expire timestamp, which is less than create timestamp -> invalid
+        let res = Client::new(&token_bytes);
+        assert!(matches!(
+            res,
+            Err(Error::InvalidToken(InvalidTokenError::InvalidTimestamp))
+        ));
+        let mut token_bytes = [0u8; ConnectToken::SIZE];
+        let mut cursor = std::io::Cursor::new(&mut token_bytes[..]);
+        cursor.write_all(NETCODE_VERSION).unwrap();
+        cursor.write_u64::<LittleEndian>(0).unwrap(); // protocol id
+        cursor.write_u64::<LittleEndian>(0).unwrap(); // create timestamp
+        cursor.write_u64::<LittleEndian>(0).unwrap(); // expire timestamp
+        cursor.write_u64::<LittleEndian>(0).unwrap(); // nonce
+        cursor.write_all(&[0; 1024]).unwrap(); // private data
+        cursor.write_i32::<LittleEndian>(0).unwrap(); // timeout
+        cursor.write_u32::<LittleEndian>(1).unwrap(); // num server addresses
+        cursor.write_u8(3).unwrap(); // INVALID server address type!
+        let res = Client::new(&token_bytes);
+        assert!(matches!(
+            res,
+            Err(Error::InvalidToken(
+                InvalidTokenError::InvalidIpAddressType(3)
+            ))
+        ));
+    }
+    #[test]
+    fn connect_token_expired() {
+        let mut time = 0.0;
+
+        let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, [0; 32])
+            .expire_seconds(1)
+            .generate()
+            .unwrap()
+            .try_into_bytes()
+            .unwrap();
+
+        let mut client = Client::new(&token_bytes).unwrap();
+
+        client.connect();
+        time += 1.1;
+
+        client.update(time);
+
+        assert!(client.is_error());
+        assert!(client.state() == ClientState::ConnectTokenExpired);
     }
 }
