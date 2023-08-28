@@ -58,11 +58,10 @@
 //!     let now = start.elapsed().as_secs_f64();
 //!     server.update(now);
 //!     let mut packet = [0; MAX_PACKET_SIZE];
-//!     if let Ok(Some((received, _))) = server.recv(&mut packet) {
-//!        let payload = &packet[..received];
+//!     while let Some((received, _)) = server.recv() {
 //!        // ...
 //!     }
-//! #   else { break;}
+//!     # break;
 //! }
 //! ```
 //!
@@ -101,10 +100,8 @@
 //! loop {
 //!     thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
 //!     let now = start.elapsed().as_secs_f64();
-//!     client.update(now);
-//!     let mut packet = [0; MAX_PACKET_SIZE];
-//!     if let Ok(received) = client.recv(&mut packet) {
-//!         let payload = &packet[..received];
+//!     client.try_update(now).ok();
+//!     if let Some(packet) = client.recv() {
 //!         // ...
 //!     }
 //!     # break;

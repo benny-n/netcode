@@ -50,11 +50,10 @@ fn main() {
         let now = start.elapsed().as_secs_f64();
         server.update(now);
 
-        let mut packet = [0; 1175];
-        if let Ok(Some((received, client_idx))) = server.recv(&mut packet) {
-            let s = std::str::from_utf8(&packet[..received]).unwrap();
+        while let Some((packet, client_idx)) = server.recv() {
+            let s = std::str::from_utf8(&packet).unwrap();
             println!("server received: {s}",);
-            server.send(&packet[..received], client_idx).unwrap();
+            server.send(&packet, client_idx).unwrap();
         }
         match rx.try_recv() {
             Ok(Event::Connected(idx)) => {
@@ -77,13 +76,8 @@ fn main() {
         let now = start.elapsed().as_secs_f64();
         client.update(now);
 
-        let mut packet = [0; 1175];
-        let received = client.recv(&mut packet).unwrap();
-        if received > 0 {
-            println!(
-                "echoed back: {}",
-                std::str::from_utf8(&packet[..received]).unwrap()
-            );
+        if let Some(packet) = client.recv() {
+            println!("echoed back: {}", std::str::from_utf8(&packet).unwrap());
         }
         if let ClientState::Connected = client.state() {
             match rx.recv_timeout(Duration::from_secs_f64(tick_rate)) {

@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     net::SocketAddr,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -158,7 +159,8 @@ pub enum ClientState {
 /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
 /// # use std::time::{Instant, Duration};
 /// # use std::thread;
-/// # let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, [0; 32]).generate().unwrap().try_into_bytes().unwrap();
+/// # let mut server = netcode::Server::new("127.0.0.1:0", 0, [0; 32]).unwrap();
+/// # let token_bytes = server.token(0).generate().unwrap().try_into_bytes().unwrap();
 /// let mut client = Client::new(&token_bytes).unwrap();
 /// client.connect();
 ///
@@ -167,9 +169,11 @@ pub enum ClientState {
 /// loop {
 ///     client.update(start.elapsed().as_secs_f64());
 ///     let mut packet = [0; netcode::MAX_PACKET_SIZE];
-///     let _received = client.recv(&mut packet).unwrap();
 ///     if client.is_connected() {
 ///         client.send(b"Hello World!").unwrap();
+///     }
+///     if let Some(packet) = client.recv() {
+///         println!("received packet: {:?}", packet);
 ///     }
 ///     thread::sleep(Duration::from_secs_f64(tick_rate));
 ///     # break;
@@ -192,6 +196,7 @@ pub struct Client<T: Transceiver, Ctx = ()> {
     replay_protection: ReplayProtection,
     should_disconnect: bool,
     should_disconnect_state: ClientState,
+    packet_queue: VecDeque<Vec<u8>>,
     cfg: ClientConfig<Ctx>,
 }
 
@@ -227,6 +232,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
             replay_protection: ReplayProtection::new(),
             should_disconnect: false,
             should_disconnect_state: ClientState::Disconnected,
+            packet_queue: VecDeque::new(),
             cfg,
         })
     }
@@ -320,9 +326,9 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.reset_connection();
         log::debug!("client disconnected");
     }
-    fn send_periodic_packets(&mut self) {
+    fn send_packets(&mut self) -> Result<()> {
         if self.last_send_time + self.cfg.packet_send_rate >= self.time {
-            return;
+            return Ok(());
         }
         let packet = match self.state {
             ClientState::SendingConnectionRequest => {
@@ -339,14 +345,12 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
                 ResponsePacket::create(self.challenge_token_sequence, self.challenge_token_data)
             }
             ClientState::Connected => {
-                log::trace!("client sending connection keep alive packet to server");
+                log::trace!("client sending connection keep-alive packet to server");
                 KeepAlivePacket::create(0, 0)
             }
-            _ => return,
+            _ => return Ok(()),
         };
-        if let Err(e) = self.send_packet(packet) {
-            log::error!("client failed to send packet: {e}");
-        }
+        self.send_packet(packet)
     }
     fn connect_to_next_server(&mut self) -> std::result::Result<(), ()> {
         if self.server_addr_idx + 1 >= self.token.server_addresses.len() {
@@ -392,17 +396,18 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
                 self.set_state(ClientState::SendingChallengeResponse);
             }
             (Packet::KeepAlive(_), ClientState::Connected) => {
-                log::trace!("client received connection keep alive packet from server");
+                log::trace!("client received connection keep-alive packet from server");
             }
             (Packet::KeepAlive(pkt), ClientState::SendingChallengeResponse) => {
-                log::debug!("client received connection keep alive packet from server");
+                log::debug!("client received connection keep-alive packet from server");
                 self.client_index = pkt.client_index;
                 self.max_clients = pkt.max_clients;
                 self.set_state(ClientState::Connected);
                 log::info!("client connected to server");
             }
-            (Packet::Payload(_), ClientState::Connected) => {
+            (Packet::Payload(pkt), ClientState::Connected) => {
                 log::debug!("client received connection payload packet from server");
+                self.packet_queue.push_back(pkt.buf.to_vec());
             }
             (Packet::Disconnect(_), ClientState::Connected) => {
                 log::debug!("client received disconnect packet from server");
@@ -412,6 +417,83 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
             _ => return Ok(()),
         }
         self.last_receive_time = self.time;
+        Ok(())
+    }
+    fn update_state(&mut self) {
+        let is_token_expired = self.time - self.start_time
+            >= self.token.expire_timestamp as f64 - self.token.create_timestamp as f64;
+        let is_connection_timed_out = self.token.timeout_seconds.is_positive()
+            && (self.last_receive_time + (self.token.timeout_seconds as f64) < self.time);
+        let new_state = match self.state {
+            ClientState::SendingConnectionRequest | ClientState::SendingChallengeResponse
+                if is_token_expired =>
+            {
+                log::info!("client connect failed. connect token expired");
+                ClientState::ConnectTokenExpired
+            }
+            _ if self.should_disconnect => {
+                log::debug!(
+                    "client should disconnect -> {:?}",
+                    self.should_disconnect_state
+                );
+                if self.connect_to_next_server().is_ok() {
+                    return;
+                };
+                self.should_disconnect_state
+            }
+            ClientState::SendingConnectionRequest if is_connection_timed_out => {
+                log::info!("client connect failed. connection request timed out");
+                if self.connect_to_next_server().is_ok() {
+                    return;
+                };
+                ClientState::ConnectionRequestTimedOut
+            }
+            ClientState::SendingChallengeResponse if is_connection_timed_out => {
+                log::info!("client connect failed. connection response timed out");
+                if self.connect_to_next_server().is_ok() {
+                    return;
+                };
+                ClientState::ChallengeResponseTimedOut
+            }
+            ClientState::Connected if is_connection_timed_out => {
+                log::info!("client connection timed out");
+                ClientState::ConnectionTimedOut
+            }
+            _ => return,
+        };
+        self.reset(new_state);
+    }
+    fn recv_packet(&mut self, buf: &mut [u8], now: u64, addr: SocketAddr) -> Result<()> {
+        if buf.len() <= 1 {
+            // Too small to be a packet
+            return Ok(());
+        }
+        let packet = match Packet::read(
+            buf,
+            self.token.protocol_id,
+            now,
+            self.token.server_to_client_key,
+            Some(&mut self.replay_protection),
+            Self::ALLOWED_PACKETS,
+        ) {
+            Ok(packet) => packet,
+            Err(Error::Crypto(_)) => {
+                log::debug!("client ignored packet because it failed to decrypt");
+                return Ok(());
+            }
+            Err(e) => {
+                log::error!("client ignored packet: {e}");
+                return Ok(());
+            }
+        };
+        self.process_packet(addr, packet)
+    }
+    fn recv_packets(&mut self) -> Result<()> {
+        let mut buf = [0u8; MAX_PACKET_SIZE];
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        while let Some((size, addr)) = self.transceiver.recv(&mut buf).map_err(|e| e.into())? {
+            self.recv_packet(&mut buf[..size], now, addr)?;
+        }
         Ok(())
     }
     /// Disconnects the client from the server.
@@ -464,17 +546,45 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
     pub fn is_connected(&self) -> bool {
         matches!(self.state, ClientState::Connected)
     }
-    /// Receives a packet from the server.
+    /// Updates the client.
     ///
-    /// The packet payload will be written to the provided buffer, and the size of the payload will be returned.
-    /// If an empty packet or a non-payload packet is received, the function will return `Ok(0)`.
+    /// * Updates the client's elapsed time.
+    /// * Receives packets from the server, any received payload packets will be queued.
+    /// * Sends keep-alive or request/response packets to the server to establish/maintain a connection.
+    /// * Updates the client's state - checks for timeouts, errors and transitions to new states.
+    ///
+    /// This method should be called regularly, probably at a fixed rate (e.g., 60Hz).
+    ///
+    /// # Panics
+    /// Panics if the client can't send or receive packets.
+    /// For a non-panicking version, use [`try_update`](Server::try_update).
+    pub fn update(&mut self, time: f64) {
+        self.try_update(time)
+            .expect("send/recv error while updating client")
+    }
+    /// The fallible version of [`update`](Client::update).
+    ///
+    /// Returns an error if the client can't send or receive packets.
+    pub fn try_update(&mut self, time: f64) -> Result<()> {
+        self.time = time;
+        self.recv_packets()?;
+        self.send_packets()?;
+        self.update_state();
+        Ok(())
+    }
+    /// Receives a packet from the server, if one is available in the queue.
+    ///
+    /// The packet will be returned as a `Vec<u8>`.
+    ///
+    /// If no packet is available, `None` will be returned.
     ///
     /// # Example
     /// ```
     /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
     /// # use std::time::{Instant, Duration};
     /// # use std::thread;
-    /// # let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, [0; 32]).generate().unwrap().try_into_bytes().unwrap();
+    /// # let mut server = netcode::Server::new("127.0.0.1:0", 0, [0; 32]).unwrap();
+    /// # let token_bytes = server.token(0).generate().unwrap().try_into_bytes().unwrap();
     /// let mut client = Client::new(&token_bytes).unwrap();
     /// client.connect();
     ///
@@ -482,49 +592,14 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
     /// let tick_rate = 1.0 / 60.0;
     /// loop {
     ///     client.update(start.elapsed().as_secs_f64());
-    ///     let mut packet = [0; netcode::MAX_PACKET_SIZE];
-    ///     if let Ok(received) = client.recv(&mut packet) {
-    ///         let payload = &packet[..received];
+    ///     if let Some(packet) = client.recv() {
     ///         // ...
     ///     }
     ///     # break;
     /// }
     /// ```
-    pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let Some((size, addr)) = self.transceiver.recv(buf).map_err(|e| e.into())? else {
-            // No packet received
-            return Ok(0);
-        };
-        if size <= 1 {
-            // Too small to be a packet
-            return Ok(0);
-        }
-        let packet = match Packet::read(
-            &mut buf[..size],
-            self.token.protocol_id,
-            now,
-            self.token.server_to_client_key,
-            Some(&mut self.replay_protection),
-            Self::ALLOWED_PACKETS,
-        ) {
-            Ok(packet) => packet,
-            Err(Error::Crypto(_)) => {
-                log::debug!("client ignored packet because it failed to decrypt");
-                return Ok(0);
-            }
-            Err(e) => {
-                log::error!("client ignored packet: {e}");
-                return Ok(0);
-            }
-        };
-        let size = if let Packet::Payload(ref packet) = packet {
-            packet.buf.len()
-        } else {
-            0
-        };
-        self.process_packet(addr, packet)?;
-        Ok(size)
+    pub fn recv(&mut self) -> Option<Vec<u8>> {
+        self.packet_queue.pop_front()
     }
     /// Sends a packet to the server.
     ///
@@ -538,53 +613,6 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         }
         self.send_packet(PayloadPacket::create(buf))?;
         Ok(())
-    }
-    /// Updates the client state and sends/receives non-payload packets if necessary.
-    pub fn update(&mut self, time: f64) {
-        self.time = time;
-        self.send_periodic_packets();
-        let is_token_expired = self.time - self.start_time
-            >= self.token.expire_timestamp as f64 - self.token.create_timestamp as f64;
-        let is_connection_timed_out = self.token.timeout_seconds.is_positive()
-            && (self.last_receive_time + (self.token.timeout_seconds as f64) < self.time);
-        let new_state = match self.state {
-            ClientState::SendingConnectionRequest | ClientState::SendingChallengeResponse
-                if is_token_expired =>
-            {
-                log::info!("client connect failed. connect token expired");
-                ClientState::ConnectTokenExpired
-            }
-            _ if self.should_disconnect => {
-                log::debug!(
-                    "client should disconnect -> {:?}",
-                    self.should_disconnect_state
-                );
-                if self.connect_to_next_server().is_ok() {
-                    return;
-                };
-                self.should_disconnect_state
-            }
-            ClientState::SendingConnectionRequest if is_connection_timed_out => {
-                log::info!("client connect failed. connection request timed out");
-                if self.connect_to_next_server().is_ok() {
-                    return;
-                };
-                ClientState::ConnectionRequestTimedOut
-            }
-            ClientState::SendingChallengeResponse if is_connection_timed_out => {
-                log::info!("client connect failed. connection response timed out");
-                if self.connect_to_next_server().is_ok() {
-                    return;
-                };
-                ClientState::ChallengeResponseTimedOut
-            }
-            ClientState::Connected if is_connection_timed_out => {
-                log::info!("client connection timed out");
-                ClientState::ConnectionTimedOut
-            }
-            _ => return,
-        };
-        self.reset(new_state);
     }
 }
 
@@ -615,6 +643,7 @@ mod tests {
                 replay_protection: ReplayProtection::new(),
                 should_disconnect: false,
                 should_disconnect_state: ClientState::Disconnected,
+                packet_queue: VecDeque::new(),
                 cfg: ClientConfig::default(),
             })
         }
@@ -667,26 +696,5 @@ mod tests {
                 InvalidTokenError::InvalidIpAddressType(3)
             ))
         ));
-    }
-    #[test]
-    fn connect_token_expired() {
-        let mut time = 0.0;
-
-        let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, [0; 32])
-            .expire_seconds(1)
-            .generate()
-            .unwrap()
-            .try_into_bytes()
-            .unwrap();
-
-        let mut client = Client::new(&token_bytes).unwrap();
-
-        client.connect();
-        time += 1.1;
-
-        client.update(time);
-
-        assert!(client.is_error());
-        assert!(client.state() == ClientState::ConnectTokenExpired);
     }
 }

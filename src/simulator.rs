@@ -35,8 +35,8 @@ impl Default for SimulationConfig {
         Self {
             latency_ms: 250.0,
             jitter_ms: 250.0,
-            packet_loss_percent: 5.0,
-            duplicate_packet_percent: 10.0,
+            packet_loss_percent: 25.0,
+            duplicate_packet_percent: 0.0,
         }
     }
 }
@@ -102,7 +102,7 @@ impl Transceiver for NetworkSimulator {
             return Ok(0);
         };
         if rand_float(0.0..100.) < self.cfg.packet_loss_percent {
-            log::error!("packet lost {}", buf[0] & 0xF);
+            // log::error!("packet lost {}", buf[0] & 0xF);
             return Ok(0);
         }
         let mut delay = self.cfg.latency_ms / 1000.0;
@@ -141,7 +141,7 @@ mod tests {
         // static LOGGER_CELL: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         // LOGGER_CELL.get_or_init(|| {
         //     env_logger::Builder::new()
-        //         .filter(None, log::LevelFilter::Trace)
+        //         .filter(None, log::LevelFilter::Debug)
         //         .init();
         // });
     }
@@ -167,9 +167,7 @@ mod tests {
 
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if client.state() == ClientState::Connected {
                 break;
@@ -185,18 +183,15 @@ mod tests {
         loop {
             client.update(time);
             client.send(&payload).unwrap();
-            let mut buf = [0; 1175];
-            let size = client.recv(&mut buf).unwrap();
-            if size > 0 {
-                payload = buf[..size].to_vec();
+            if let Some(pkt) = client.recv() {
+                payload = pkt.clone();
                 payload.push(payload.last().unwrap() + 1);
             }
 
             server.update(time);
-            let mut buf = [0; 1175];
-            if let Ok(Some((size, client_idx))) = server.recv(&mut buf) {
+            if let Some((pkt, client_idx)) = server.recv() {
                 assert_eq!(client_idx, ClientIndex(0));
-                payload = buf[..size].to_vec();
+                payload = pkt.clone();
                 payload.push(payload.last().unwrap() + 1);
                 server.send(&payload, client_idx).unwrap();
             }
@@ -208,6 +203,32 @@ mod tests {
             time += delta;
         }
         assert_eq!(payload, b"abcdefghijklmnopqrstuvwxyz");
+    }
+
+    #[test]
+    fn client_connect_token_expired() {
+        enable_logging();
+
+        let routing_table = Rc::new(RefCell::new(HashMap::new()));
+        let client_sim = NetworkSimulator::new(40000, routing_table.clone());
+        let server_sim = NetworkSimulator::new(50000, routing_table.clone());
+
+        let mut time = 0.0;
+
+        let mut server = Server::with_simulator(server_sim, None).unwrap();
+
+        let token = server.token(123u64).expire_seconds(1).generate().unwrap();
+
+        let mut client = Client::with_simulator(token, client_sim).unwrap();
+
+        client.connect();
+
+        time += 1.1;
+
+        client.update(time);
+
+        assert!(client.is_error());
+        assert!(client.state() == ClientState::ConnectTokenExpired);
     }
 
     #[test]
@@ -232,9 +253,7 @@ mod tests {
         // connect client
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if client.is_connected() || client.is_error() {
                 break;
@@ -250,8 +269,6 @@ mod tests {
         let num_iterations = (1.5 * CONNECTION_TIMEOUT_SEC as f64 / delta).ceil() as usize;
         for _ in 0..num_iterations {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
-
             time += delta;
         }
         assert!(client.is_error());
@@ -263,7 +280,6 @@ mod tests {
 
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
 
             if client.is_error() {
                 break;
@@ -281,10 +297,8 @@ mod tests {
             if client.state() != ClientState::SendingChallengeResponse {
                 // when client reaches SendingChallengeResponse state, stop updating server
                 server.update(time);
-                server.recv(&mut [0; 1175]).unwrap();
             }
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
 
             if client.is_error() {
                 break;
@@ -319,9 +333,7 @@ mod tests {
 
         for _ in 0..20 {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             time += 10000000.0;
         }
@@ -353,9 +365,7 @@ mod tests {
         let mut iterations_done = 0;
         for i in 0..num_iterations {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if client.is_connected() || client.is_error() {
                 break;
@@ -402,10 +412,9 @@ mod tests {
         loop {
             for client in clients.iter_mut() {
                 client.update(time);
-                client.recv(&mut [0; 1175]).unwrap();
             }
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
+            server.recv();
 
             if clients.iter().all(|c| c.is_connected()) || clients.iter().any(|c| c.is_error()) {
                 break;
@@ -425,23 +434,19 @@ mod tests {
         loop {
             for (i, client) in clients.iter_mut().enumerate() {
                 client.update(time);
-                let mut buf = [0; 1175];
-                let size = client.recv(&mut buf).unwrap();
-                if size > 0 {
+                if let Some(pkt) = client.recv() {
                     client_num_packets_received[i] = true;
-                    assert_eq!(size, payload.len());
-                    assert_eq!(&buf[..size], payload);
+                    assert_eq!(pkt, payload);
                 }
                 if client.is_connected() {
                     client.send(payload).unwrap();
                 }
             }
             server.update(time);
-            let mut buf = [0; 1175];
-            if let Ok(Some((size, client_idx))) = server.recv(&mut buf) {
+            if let Some((pkt, client_idx)) = server.recv() {
                 server_num_packets_received[client_idx] = true;
-                assert_eq!(size, payload.len());
-                assert_eq!(&buf[..size], payload);
+                assert_eq!(pkt.len(), payload.len());
+                assert_eq!(&pkt, payload);
                 server.send(payload, client_idx).unwrap();
             }
 
@@ -466,10 +471,8 @@ mod tests {
         loop {
             for client in clients.iter_mut() {
                 client.update(time);
-                client.recv(&mut [0; 1175]).unwrap();
             }
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if clients.iter().any(|c| c.is_error()) {
                 break;
@@ -488,10 +491,8 @@ mod tests {
         loop {
             for client in clients.iter_mut() {
                 client.update(time);
-                client.recv(&mut [0; 1175]).unwrap();
             }
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if clients.iter().any(|c| c.is_error()) {
                 break;
@@ -532,9 +533,7 @@ mod tests {
         // connect to 1st server
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server1.update(time);
-            server1.recv(&mut [0; 1175]).unwrap();
 
             if client.is_connected() || client.is_error() {
                 break;
@@ -551,11 +550,8 @@ mod tests {
         server1.disconnect_all().unwrap();
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server1.update(time);
-            server1.recv(&mut [0; 1175]).unwrap();
             server2.update(time);
-            server2.recv(&mut [0; 1175]).unwrap();
 
             if client.is_error() {
                 break;
@@ -595,9 +591,7 @@ mod tests {
         // connect client
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if client.is_connected() || client.is_error() {
                 break;
@@ -613,9 +607,7 @@ mod tests {
         server.disconnect_client(ClientIndex(0)).unwrap();
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if client.is_error() {
                 break;
@@ -652,9 +644,7 @@ mod tests {
         // connect client
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if client.is_connected() || client.is_error() {
                 break;
@@ -670,9 +660,7 @@ mod tests {
         client.disconnect().unwrap();
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if client.is_error() {
                 break;
@@ -690,9 +678,7 @@ mod tests {
         client.connect();
         loop {
             client.update(time);
-            client.recv(&mut [0; 1175]).unwrap();
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
             if client.is_error() {
                 break;
@@ -728,7 +714,7 @@ mod tests {
             let token = server
                 .token(i as u64)
                 .expire_seconds(-1)
-                .timeout_seconds(-1)
+                .timeout_seconds(10000)
                 .generate()
                 .unwrap();
             let client_sim = NetworkSimulator::new(40000 + i as u16, routing_table.clone());
@@ -741,35 +727,41 @@ mod tests {
         loop {
             for client in clients.iter_mut() {
                 client.update(time);
-                client.recv(&mut [0; 1175]).unwrap();
             }
             server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
-            let connected = server.iter_clients().count();
-            println!("connected: {}", connected);
+            let connected = clients.iter().filter(|c| c.is_connected()).count();
             if connected == MAX_CLIENTS {
                 break;
             }
 
             time += delta;
         }
-        // now try to connect one more client and ensure it is denied
-        println!("trying to connect one more client");
-        let last_client = &mut clients[MAX_CLIENTS];
-        loop {
-            last_client.update(time);
-            last_client.recv(&mut [0; 1175]).unwrap();
-            server.update(time);
-            server.recv(&mut [0; 1175]).unwrap();
 
-            if last_client.is_error() {
+        // find the one client that is not connected
+        let c = clients.into_iter().filter(|c| !c.is_connected());
+        // assert that exactly one client is not connected
+        let mut denied_client = c.collect::<Vec<_>>();
+        assert_eq!(denied_client.len(), 1);
+        let mut denied_client = denied_client.pop().unwrap();
+        // if the client is already denied, we are done
+        if denied_client.state() == ClientState::ConnectionDenied {
+            return;
+        }
+        // otherwise it still must be in a pending state
+        assert!(denied_client.is_pending());
+        // now wait for the client to be denied
+        loop {
+            denied_client.update(time);
+            server.update(time);
+
+            if denied_client.is_error() {
                 break;
             }
 
             time += delta;
         }
-        assert!(last_client.state() == ClientState::ConnectionDenied);
+        assert!(denied_client.state() == ClientState::ConnectionDenied);
         assert!(server.iter_clients().count() == MAX_CLIENTS);
     }
 }

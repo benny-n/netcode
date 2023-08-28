@@ -295,7 +295,7 @@ impl std::fmt::Display for Packet<'_> {
         match self {
             Packet::Request(_) => write!(f, "connection request"),
             Packet::Response(_) => write!(f, "connection response"),
-            Packet::KeepAlive(_) => write!(f, "keep alive packet"),
+            Packet::KeepAlive(_) => write!(f, "keep-alive packet"),
             Packet::Payload(_) => write!(f, "payload packet"),
             Packet::Disconnect(_) => write!(f, "disconnect packet"),
             Packet::Denied(_) => write!(f, "denied packet"),
@@ -453,7 +453,7 @@ impl<'p> Packet<'p> {
             Packet::PAYLOAD => {
                 buf.copy_within(decryption_start..(decryption_end - MAC_SIZE), 0);
                 Packet::Payload(PayloadPacket {
-                    buf: &buf[decryption_start..(decryption_end - MAC_SIZE)],
+                    buf: &buf[..decryption_end - decryption_start - MAC_SIZE],
                 })
             }
             t => return Err(Error::InvalidType(t).into()),
