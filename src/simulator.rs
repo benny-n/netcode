@@ -35,8 +35,8 @@ impl Default for SimulationConfig {
         Self {
             latency_ms: 250.0,
             jitter_ms: 250.0,
-            packet_loss_percent: 25.0,
-            duplicate_packet_percent: 0.0,
+            packet_loss_percent: 5.0,
+            duplicate_packet_percent: 10.0,
         }
     }
 }
@@ -176,7 +176,7 @@ mod tests {
 
             time += delta;
         }
-        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.num_connected_clients(), 1);
         assert_eq!(server.iter_clients().last().unwrap().0, 0);
         assert!(client.is_connected());
 
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn client_server_timeout() {
+    fn client_timeout() {
         enable_logging();
 
         let routing_table = Rc::new(RefCell::new(HashMap::new()));
@@ -262,7 +262,7 @@ mod tests {
 
             time += delta;
         }
-        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.num_connected_clients(), 1);
         assert_eq!(server.iter_clients().last().unwrap().0, 0);
         assert!(client.is_connected());
 
@@ -283,6 +283,11 @@ mod tests {
             client.update(time);
 
             if client.is_error() {
+                // only update server when client is not connected
+                server.update(time);
+            }
+
+            if server.num_connected_clients() == 0 {
                 break;
             }
 
@@ -308,6 +313,48 @@ mod tests {
             time += delta;
         }
         assert!(client.state() == ClientState::ChallengeResponseTimedOut);
+    }
+
+    #[test]
+    fn server_timeout() {
+        enable_logging();
+
+        let routing_table = Rc::new(RefCell::new(HashMap::new()));
+        let client_sim = NetworkSimulator::new(40000, routing_table.clone());
+        let server_sim = NetworkSimulator::new(50000, routing_table.clone());
+
+        let mut time = 0.0;
+        let delta = 1. / 10.;
+
+        let mut server = Server::with_simulator(server_sim, None).unwrap();
+
+        let token = server.token(123u64).generate().unwrap();
+
+        let mut client = Client::with_simulator(token, client_sim).unwrap();
+
+        client.connect();
+
+        // connect client
+        loop {
+            client.update(time);
+            server.update(time);
+
+            if client.is_connected() || client.is_error() {
+                break;
+            }
+
+            time += delta;
+        }
+        assert_eq!(server.num_connected_clients(), 1);
+        assert_eq!(server.iter_clients().last().unwrap().0, 0);
+
+        // now don't update client for a while and ensure server times out the client
+        let num_iterations = (1.5 * CONNECTION_TIMEOUT_SEC as f64 / delta).ceil() as usize;
+        for _ in 0..num_iterations {
+            server.update(time);
+            time += delta;
+        }
+        assert_eq!(server.num_connected_clients(), 0);
     }
 
     #[test]
@@ -338,7 +385,7 @@ mod tests {
 
             time += 10000000.0;
         }
-        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.num_connected_clients(), 1);
         assert_eq!(server.iter_clients().last().unwrap().0, 0);
         assert!(client.is_connected());
     }
@@ -375,7 +422,7 @@ mod tests {
             time += delta;
             iterations_done = i;
         }
-        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.num_connected_clients(), 1);
         assert_eq!(server.iter_clients().last().unwrap().0, 0);
         assert!(client.is_connected());
         assert!(iterations_done < num_iterations);
@@ -423,7 +470,7 @@ mod tests {
 
             time += delta;
         }
-        assert_eq!(server.iter_clients().count(), 3);
+        assert_eq!(server.num_connected_clients(), 3);
         for client in clients.iter() {
             assert!(client.is_connected());
         }
@@ -479,13 +526,13 @@ mod tests {
                 break;
             }
 
-            if server.iter_clients().count() <= 2 {
+            if server.num_connected_clients() <= 2 {
                 break;
             }
 
             time += delta;
         }
-        assert_eq!(server.iter_clients().count(), 2);
+        assert_eq!(server.num_connected_clients(), 2);
 
         // disconnect the remaining clients (by the server's initiative) and ensure they disconnect
         server.disconnect_all().unwrap();
@@ -499,13 +546,13 @@ mod tests {
                 break;
             }
 
-            if server.iter_clients().count() == 0 {
+            if server.num_connected_clients() == 0 {
                 break;
             }
 
             time += delta;
         }
-        assert_eq!(server.iter_clients().count(), 0);
+        assert_eq!(server.num_connected_clients(), 0);
     }
 
     #[test]
@@ -542,10 +589,10 @@ mod tests {
 
             time += delta;
         }
-        assert_eq!(server1.iter_clients().count(), 1);
+        assert_eq!(server1.num_connected_clients(), 1);
         assert_eq!(server1.iter_clients().last().unwrap().0, 0);
         assert!(client.is_connected());
-        assert_eq!(server2.iter_clients().count(), 0);
+        assert_eq!(server2.num_connected_clients(), 0);
 
         // disconnect client from 1st server
         server1.disconnect_all().unwrap();
@@ -558,14 +605,14 @@ mod tests {
                 break;
             }
 
-            if server2.iter_clients().count() == 1 && client.is_connected() {
+            if server2.num_connected_clients() == 1 && client.is_connected() {
                 break;
             }
 
             time += delta;
         }
-        assert_eq!(server1.iter_clients().count(), 0);
-        assert_eq!(server2.iter_clients().count(), 1);
+        assert_eq!(server1.num_connected_clients(), 0);
+        assert_eq!(server2.num_connected_clients(), 1);
         assert_eq!(server2.iter_clients().last().unwrap().0, 0);
         assert!(client.is_connected());
     }
@@ -600,7 +647,7 @@ mod tests {
 
             time += delta;
         }
-        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.num_connected_clients(), 1);
         assert_eq!(server.iter_clients().last().unwrap().0, 0);
         assert!(client.is_connected());
 
@@ -614,13 +661,13 @@ mod tests {
                 break;
             }
 
-            if server.iter_clients().count() == 0 {
+            if server.num_connected_clients() == 0 {
                 break;
             }
 
             time += delta;
         }
-        assert_eq!(server.iter_clients().count(), 0);
+        assert_eq!(server.num_connected_clients(), 0);
     }
 
     #[test]
@@ -653,7 +700,7 @@ mod tests {
 
             time += delta;
         }
-        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.num_connected_clients(), 1);
         assert_eq!(server.iter_clients().last().unwrap().0, 0);
         assert!(client.is_connected());
 
@@ -667,13 +714,13 @@ mod tests {
                 break;
             }
 
-            if server.iter_clients().count() == 0 {
+            if server.num_connected_clients() == 0 {
                 break;
             }
 
             time += delta;
         }
-        assert_eq!(server.iter_clients().count(), 0);
+        assert_eq!(server.num_connected_clients(), 0);
 
         // test reconnect
         client.connect();
@@ -685,14 +732,14 @@ mod tests {
                 break;
             }
 
-            if client.is_connected() && server.iter_clients().count() == 1 {
+            if client.is_connected() && server.num_connected_clients() == 1 {
                 break;
             }
 
             time += delta;
         }
         assert!(client.is_connected());
-        assert_eq!(server.iter_clients().count(), 1);
+        assert_eq!(server.num_connected_clients(), 1);
         assert_eq!(server.iter_clients().last().unwrap().0, 0);
     }
 
@@ -747,6 +794,6 @@ mod tests {
             time += delta;
         }
         assert!(last_client.state() == ClientState::ConnectionDenied);
-        assert!(server.iter_clients().count() == MAX_CLIENTS);
+        assert!(server.num_connected_clients() == MAX_CLIENTS);
     }
 }

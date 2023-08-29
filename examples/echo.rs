@@ -26,13 +26,8 @@ fn main() {
         .on_disconnect(move |client_idx, tx| {
             tx.send(Event::Disconnected(client_idx)).unwrap();
         });
-    let mut server = Server::with_config(
-        "127.0.0.1:12345".parse().unwrap(),
-        0x11223344,
-        my_secret_private_key,
-        cfg,
-    )
-    .unwrap();
+    let mut server =
+        Server::with_config("127.0.0.1:12345", 0x11223344, my_secret_private_key, cfg).unwrap();
     let client_id = 123u64;
     let token = server
         .token(client_id)

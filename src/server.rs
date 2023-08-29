@@ -73,7 +73,6 @@ struct Connection {
     client_id: ClientId,
     addr: SocketAddr,
     timeout: i32,
-    expire_time: f64,
     last_access_time: f64,
     last_send_time: f64,
     last_receive_time: f64,
@@ -154,14 +153,12 @@ impl ConnectionCache {
         client_id: ClientId,
         addr: SocketAddr,
         timeout: i32,
-        expire_time: f64,
         send_key: Key,
         receive_key: Key,
     ) {
         if let Some((_, ref mut existing)) = self.find_by_addr(&addr) {
             existing.client_id = client_id;
             existing.timeout = timeout;
-            existing.expire_time = expire_time;
             existing.send_key = send_key;
             existing.receive_key = receive_key;
             existing.last_access_time = self.time;
@@ -173,7 +170,6 @@ impl ConnectionCache {
             client_id,
             addr,
             timeout,
-            expire_time,
             last_access_time: self.time,
             last_send_time: f64::NEG_INFINITY,
             last_receive_time: f64::NEG_INFINITY,
@@ -205,20 +201,8 @@ impl ConnectionCache {
             (conn.client_id == client_id).then_some((ClientIndex(idx), conn))
         })
     }
-    fn is_connection_expired(conn: &Connection, time: f64) -> bool {
-        (0.0..time).contains(&conn.expire_time)
-            || (0.0..time - conn.last_access_time).contains(&(conn.timeout as f64))
-    }
     fn update(&mut self, time: f64) {
         self.time = time;
-        for idx in 0..MAX_CLIENTS {
-            let Some(conn) = self.clients.get_mut(idx) else {
-                continue;
-            };
-            if Self::is_connection_expired(conn, time) {
-                self.remove(ClientIndex(idx));
-            }
-        }
     }
 }
 type Callback<Ctx> = Box<dyn FnMut(ClientIndex, &mut Ctx) + Send + Sync + 'static>;
@@ -394,14 +378,14 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
     ///
     /// let private_key = netcode::generate_key();
     /// let protocol_id = 0x123456789ABCDEF0;
-    /// let addr = "127.0.0.1:40002".parse().unwrap();
+    /// let addr = "127.0.0.1:40002";
     /// let cfg = ServerConfig::with_context(42).on_connect(|idx, ctx| {
     ///     assert_eq!(ctx, &42);
     /// });
     /// let server = Server::with_config(addr, protocol_id, private_key, cfg).unwrap();
     /// ```
     pub fn with_config(
-        bind_addr: SocketAddr,
+        bind_addr: impl ToSocketAddrs,
         protocol_id: u64,
         private_key: Key,
         cfg: ServerConfig<Ctx>,
@@ -419,7 +403,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
             token_entries: TokenEntries::new(),
             cfg,
         };
-        log::info!("server started on {}", bind_addr);
+        log::info!("server started on {}", server.addr());
         Ok(server)
     }
 }
@@ -567,16 +551,10 @@ impl<T: Transceiver, S> Server<T, S> {
             )?;
             return Ok(());
         };
-        let expire_time = if token.timeout_seconds.is_positive() {
-            self.time + token.timeout_seconds as f64
-        } else {
-            -1.0
-        };
         self.conn_cache.add(
             token.client_id,
             from_addr,
             token.timeout_seconds,
-            expire_time,
             token.server_to_client_key,
             token.client_to_server_key,
         );
@@ -862,6 +840,12 @@ impl<T: Transceiver, S> Server<T, S> {
     ///
     /// The server will send a number of redundant disconnect packets to the client, and then remove its connection info.
     pub fn disconnect(&mut self, client_idx: ClientIndex) -> Result<()> {
+        let Some(conn) = self.conn_cache.clients.get_mut(client_idx.0) else {
+            return Ok(());
+        };
+        if !conn.is_connected() {
+            return Ok(());
+        }
         log::debug!("server disconnecting client {client_idx}");
         for _ in 0..self.cfg.num_disconnect_packets {
             self.send_to_client(DisconnectPacket::create(), client_idx)?;
@@ -913,7 +897,10 @@ pub mod tests {
     use super::*;
     use crate::simulator::NetworkSimulator;
     impl Server<NetworkSimulator> {
-        pub fn with_simulator(sim: NetworkSimulator, private_key: Option<Key>) -> Result<Self> {
+        pub(crate) fn with_simulator(
+            sim: NetworkSimulator,
+            private_key: Option<Key>,
+        ) -> Result<Self> {
             let time = 0.0;
             log::info!("server started on {}", sim.addr());
             let server = Server {
@@ -931,7 +918,7 @@ pub mod tests {
             };
             Ok(server)
         }
-        pub fn iter_clients(&self) -> impl Iterator<Item = ClientIndex> + '_ {
+        pub(crate) fn iter_clients(&self) -> impl Iterator<Item = ClientIndex> + '_ {
             self.conn_cache
                 .clients
                 .iter()

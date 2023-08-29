@@ -16,7 +16,6 @@ use crate::{
 };
 
 #[derive(thiserror::Error, Debug)]
-#[non_exhaustive]
 pub enum Error {
     #[error("packet type {0} is invalid")]
     InvalidType(u8),

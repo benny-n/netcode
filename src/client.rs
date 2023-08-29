@@ -633,7 +633,7 @@ mod tests {
     use std::io::Write;
     use std::mem::size_of;
     impl Client<NetworkSimulator> {
-        pub fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
+        pub(crate) fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
             Ok(Self {
                 transceiver: sim,
                 state: ClientState::Disconnected,
