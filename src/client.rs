@@ -1,5 +1,6 @@
 use std::{
-    net::SocketAddr,
+    collections::VecDeque,
+    net::{Ipv4Addr, SocketAddr},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -16,8 +17,11 @@ use crate::{
     MAX_PACKET_SIZE, MAX_PKT_BUF_SIZE, PACKET_SEND_RATE_SEC,
 };
 
+const RECV_BUF_SIZE: usize = 256 * 1024;
+const SEND_BUF_SIZE: usize = 256 * 1024;
+
 type Callback<Ctx> = Box<dyn FnMut(ClientState, ClientState, &mut Ctx) + Send + Sync + 'static>;
-/// Configuration for a client
+/// Configuration for a client.
 ///
 /// * `num_disconnect_packets` - The number of redundant disconnect packets that will be sent to a server when the clients wants to disconnect.
 /// * `packet_send_rate` - The rate at which periodic packets will be sent to the server.
@@ -107,14 +111,14 @@ impl<Ctx> ClientConfig<Ctx> {
 /// While in `SendingChallengeResponse`, when the client receives a connection keep-alive packet from the server,
 /// it stores the client index and max clients in the packet, and transitions to `Connected`.
 ///
-/// Any connection payload packets received prior to `Connected` are discarded.
+/// Any payload packets received prior to `Connected` are discarded.
 ///
 /// `Connected` is the final stage in the connection process and represents a successful connection to the server.
 ///
 /// While in this state:
 ///
-///  - The client application may send connection payload packets to the server.
-///  - In the absence of connection payload packets sent by the client application, the client generates and sends connection keep-alive packets
+///  - The client application may send payload packets to the server.
+///  - In the absence of payload packets sent by the client application, the client generates and sends connection keep-alive packets
 ///    to the server at some rate (default is 10HZ, can be overridden in [`ClientConfig`](ClientConfig)).
 ///  - If no payload or keep-alive packets are received from the server within the timeout period specified in the connect token,
 ///    the client transitions to `ConnectionTimedOut`.
@@ -158,20 +162,22 @@ pub enum ClientState {
 /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
 /// # use std::time::{Instant, Duration};
 /// # use std::thread;
-/// # let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, [0; 32]).generate().unwrap().try_into_bytes().unwrap();
+/// # let mut server = netcode::Server::new("127.0.0.1:0", 0, [0; 32]).unwrap();
+/// # let token_bytes = server.token(0).generate().unwrap().try_into_bytes().unwrap();
 /// let mut client = Client::new(&token_bytes).unwrap();
 /// client.connect();
 ///
 /// let start = Instant::now();
-/// let tick_rate = 1.0 / 60.0;
+/// let tick_rate = Duration::from_secs_f64(1.0 / 60.0);
 /// loop {
 ///     client.update(start.elapsed().as_secs_f64());
-///     let mut packet = [0; netcode::MAX_PACKET_SIZE];
-///     let _received = client.recv(&mut packet).unwrap();
 ///     if client.is_connected() {
 ///         client.send(b"Hello World!").unwrap();
 ///     }
-///     thread::sleep(Duration::from_secs_f64(tick_rate));
+///     if let Some(packet) = client.recv() {
+///         println!("received packet: {:?}", packet);
+///     }
+///     thread::sleep(tick_rate);
 ///     # break;
 /// }
 /// ```
@@ -192,6 +198,7 @@ pub struct Client<T: Transceiver, Ctx = ()> {
     replay_protection: ReplayProtection,
     should_disconnect: bool,
     should_disconnect_state: ClientState,
+    packet_queue: VecDeque<Vec<u8>>,
     cfg: ClientConfig<Ctx>,
 }
 
@@ -211,7 +218,11 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
             }
         };
         Ok(Self {
-            transceiver: NetcodeSocket::default(),
+            transceiver: NetcodeSocket::new(
+                (Ipv4Addr::UNSPECIFIED, 0),
+                SEND_BUF_SIZE,
+                RECV_BUF_SIZE,
+            )?,
             state: ClientState::Disconnected,
             time: 0.0,
             start_time: 0.0,
@@ -227,6 +238,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
             replay_protection: ReplayProtection::new(),
             should_disconnect: false,
             should_disconnect_state: ClientState::Disconnected,
+            packet_queue: VecDeque::new(),
             cfg,
         })
     }
@@ -247,7 +259,6 @@ impl Client<NetcodeSocket> {
     ///     .unwrap();
     ///
     /// let mut client = Client::new(&token_bytes).unwrap();
-    /// assert_eq!(client.state(), ClientState::Disconnected);
     /// ```
     pub fn new(token_bytes: &[u8]) -> Result<Self> {
         let client = Client::from_token(token_bytes, ClientConfig::default())?;
@@ -277,9 +288,6 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     /// });
     ///
     /// let mut client = Client::with_config(&token_bytes, cfg).unwrap();
-    /// assert_eq!(client.state(), ClientState::Disconnected);
-    /// // Connect to the server
-    /// client.connect();
     /// ```
     pub fn with_config(token_bytes: &[u8], cfg: ClientConfig<Ctx>) -> Result<Self> {
         let client = Client::from_token(token_bytes, cfg)?;
@@ -320,9 +328,9 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.reset_connection();
         log::debug!("client disconnected");
     }
-    fn send_periodic_packets(&mut self) {
+    fn send_packets(&mut self) -> Result<()> {
         if self.last_send_time + self.cfg.packet_send_rate >= self.time {
-            return;
+            return Ok(());
         }
         let packet = match self.state {
             ClientState::SendingConnectionRequest => {
@@ -339,14 +347,12 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
                 ResponsePacket::create(self.challenge_token_sequence, self.challenge_token_data)
             }
             ClientState::Connected => {
-                log::trace!("client sending connection keep alive packet to server");
+                log::trace!("client sending connection keep-alive packet to server");
                 KeepAlivePacket::create(0, 0)
             }
-            _ => return,
+            _ => return Ok(()),
         };
-        if let Err(e) = self.send_packet(packet) {
-            log::error!("client failed to send packet: {e}");
-        }
+        self.send_packet(packet)
     }
     fn connect_to_next_server(&mut self) -> std::result::Result<(), ()> {
         if self.server_addr_idx + 1 >= self.token.server_addresses.len() {
@@ -392,17 +398,18 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
                 self.set_state(ClientState::SendingChallengeResponse);
             }
             (Packet::KeepAlive(_), ClientState::Connected) => {
-                log::trace!("client received connection keep alive packet from server");
+                log::trace!("client received connection keep-alive packet from server");
             }
             (Packet::KeepAlive(pkt), ClientState::SendingChallengeResponse) => {
-                log::debug!("client received connection keep alive packet from server");
+                log::debug!("client received connection keep-alive packet from server");
                 self.client_index = pkt.client_index;
                 self.max_clients = pkt.max_clients;
                 self.set_state(ClientState::Connected);
                 log::info!("client connected to server");
             }
-            (Packet::Payload(_), ClientState::Connected) => {
-                log::debug!("client received connection payload packet from server");
+            (Packet::Payload(pkt), ClientState::Connected) => {
+                log::debug!("client received payload packet from server");
+                self.packet_queue.push_back(pkt.buf.to_vec());
             }
             (Packet::Disconnect(_), ClientState::Connected) => {
                 log::debug!("client received disconnect packet from server");
@@ -414,135 +421,7 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         self.last_receive_time = self.time;
         Ok(())
     }
-    /// Disconnects the client from the server.
-    ///
-    /// The client will send a number of redundant disconnect packets to the server before transitioning to `Disconnected`.
-    pub fn disconnect(&mut self) -> Result<()> {
-        log::debug!(
-            "client sending {} disconnect packets to server",
-            self.cfg.num_disconnect_packets
-        );
-        for _ in 0..self.cfg.num_disconnect_packets {
-            self.send_packet(DisconnectPacket::create())?;
-        }
-        self.reset(ClientState::Disconnected);
-        Ok(())
-    }
-    /// Connects the client to the server.
-    ///
-    /// This function does not perform any IO, it only readies the client to send/receive packets on the next call to [`update`](Client::update). <br>
-    pub fn connect(&mut self) {
-        self.reset_connection();
-        self.set_state(ClientState::SendingConnectionRequest);
-        log::info!(
-            "client connecting to server {} [{}/{}]",
-            self.token.server_addresses[self.server_addr_idx],
-            self.server_addr_idx + 1,
-            self.token.server_addresses.len()
-        );
-    }
-    /// Gets the local `SocketAddr` that the client is bound to.
-    pub fn addr(&self) -> SocketAddr {
-        self.transceiver.addr()
-    }
-    /// Gets the current state of the client.
-    pub fn state(&self) -> ClientState {
-        self.state
-    }
-    /// Returns true if the client is in an error state.
-    pub fn is_error(&self) -> bool {
-        self.state < ClientState::Disconnected
-    }
-    /// Returns true if the client is in a pending state.
-    pub fn is_pending(&self) -> bool {
-        matches!(
-            self.state,
-            ClientState::SendingConnectionRequest | ClientState::SendingChallengeResponse
-        )
-    }
-    /// Returns true if the client is connected to a server.
-    pub fn is_connected(&self) -> bool {
-        matches!(self.state, ClientState::Connected)
-    }
-    /// Receives a packet from the server.
-    ///
-    /// The packet payload will be written to the provided buffer, and the size of the payload will be returned.
-    /// If an empty packet or a non-payload packet is received, the function will return `Ok(0)`.
-    ///
-    /// # Example
-    /// ```
-    /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
-    /// # use std::time::{Instant, Duration};
-    /// # use std::thread;
-    /// # let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, [0; 32]).generate().unwrap().try_into_bytes().unwrap();
-    /// let mut client = Client::new(&token_bytes).unwrap();
-    /// client.connect();
-    ///
-    /// let start = Instant::now();
-    /// let tick_rate = 1.0 / 60.0;
-    /// loop {
-    ///     client.update(start.elapsed().as_secs_f64());
-    ///     let mut packet = [0; netcode::MAX_PACKET_SIZE];
-    ///     if let Ok(received) = client.recv(&mut packet) {
-    ///         let payload = &packet[..received];
-    ///         // ...
-    ///     }
-    ///     # break;
-    /// }
-    /// ```
-    pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let Some((size, addr)) = self.transceiver.recv(buf).map_err(|e| e.into())? else {
-            // No packet received
-            return Ok(0);
-        };
-        if size <= 1 {
-            // Too small to be a packet
-            return Ok(0);
-        }
-        let packet = match Packet::read(
-            &mut buf[..size],
-            self.token.protocol_id,
-            now,
-            self.token.server_to_client_key,
-            Some(&mut self.replay_protection),
-            Self::ALLOWED_PACKETS,
-        ) {
-            Ok(packet) => packet,
-            Err(Error::Crypto(_)) => {
-                log::debug!("client ignored packet because it failed to decrypt");
-                return Ok(0);
-            }
-            Err(e) => {
-                log::error!("client ignored packet: {e}");
-                return Ok(0);
-            }
-        };
-        let size = if let Packet::Payload(ref packet) = packet {
-            packet.buf.len()
-        } else {
-            0
-        };
-        self.process_packet(addr, packet)?;
-        Ok(size)
-    }
-    /// Sends a packet to the server.
-    ///
-    /// The provided buffer must be smaller than [`MAX_PACKET_SIZE`](crate::MAX_PACKET_SIZE).
-    pub fn send(&mut self, buf: &[u8]) -> Result<()> {
-        if self.state != ClientState::Connected {
-            return Ok(());
-        }
-        if buf.len() > MAX_PACKET_SIZE {
-            return Err(Error::SizeMismatch(MAX_PACKET_SIZE, buf.len()));
-        }
-        self.send_packet(PayloadPacket::create(buf))?;
-        Ok(())
-    }
-    /// Updates the client state and sends/receives non-payload packets if necessary.
-    pub fn update(&mut self, time: f64) {
-        self.time = time;
-        self.send_periodic_packets();
+    fn update_state(&mut self) {
         let is_token_expired = self.time - self.start_time
             >= self.token.expire_timestamp as f64 - self.token.create_timestamp as f64;
         let is_connection_timed_out = self.token.timeout_seconds.is_positive()
@@ -586,6 +465,160 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         };
         self.reset(new_state);
     }
+    fn recv_packet(&mut self, buf: &mut [u8], now: u64, addr: SocketAddr) -> Result<()> {
+        if buf.len() <= 1 {
+            // Too small to be a packet
+            return Ok(());
+        }
+        let packet = match Packet::read(
+            buf,
+            self.token.protocol_id,
+            now,
+            self.token.server_to_client_key,
+            Some(&mut self.replay_protection),
+            Self::ALLOWED_PACKETS,
+        ) {
+            Ok(packet) => packet,
+            Err(Error::Crypto(_)) => {
+                log::debug!("client ignored packet because it failed to decrypt");
+                return Ok(());
+            }
+            Err(e) => {
+                log::error!("client ignored packet: {e}");
+                return Ok(());
+            }
+        };
+        self.process_packet(addr, packet)
+    }
+    fn recv_packets(&mut self) -> Result<()> {
+        let mut buf = [0u8; MAX_PACKET_SIZE];
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        while let Some((size, addr)) = self.transceiver.recv(&mut buf).map_err(|e| e.into())? {
+            self.recv_packet(&mut buf[..size], now, addr)?;
+        }
+        Ok(())
+    }
+    /// Prepares the client to connect to the server.
+    ///
+    /// This function does not perform any IO, it only readies the client to send/receive packets on the next call to [`update`](Client::update). <br>
+    pub fn connect(&mut self) {
+        self.reset_connection();
+        self.set_state(ClientState::SendingConnectionRequest);
+        log::info!(
+            "client connecting to server {} [{}/{}]",
+            self.token.server_addresses[self.server_addr_idx],
+            self.server_addr_idx + 1,
+            self.token.server_addresses.len()
+        );
+    }
+    /// Updates the client.
+    ///
+    /// * Updates the client's elapsed time.
+    /// * Receives packets from the server, any received payload packets will be queued.
+    /// * Sends keep-alive or request/response packets to the server to establish/maintain a connection.
+    /// * Updates the client's state - checks for timeouts, errors and transitions to new states.
+    ///
+    /// This method should be called regularly, probably at a fixed rate (e.g., 60Hz).
+    ///
+    /// # Panics
+    /// Panics if the client can't send or receive packets.
+    /// For a non-panicking version, use [`try_update`](Client::try_update).
+    pub fn update(&mut self, time: f64) {
+        self.try_update(time)
+            .expect("send/recv error while updating client")
+    }
+    /// The fallible version of [`update`](Client::update).
+    ///
+    /// Returns an error if the client can't send or receive packets.
+    pub fn try_update(&mut self, time: f64) -> Result<()> {
+        self.time = time;
+        self.recv_packets()?;
+        self.send_packets()?;
+        self.update_state();
+        Ok(())
+    }
+    /// Receives a packet from the server, if one is available in the queue.
+    ///
+    /// The packet will be returned as a `Vec<u8>`.
+    ///
+    /// If no packet is available, `None` will be returned.
+    ///
+    /// # Example
+    /// ```
+    /// # use netcode::{ConnectToken, Client, ClientConfig, ClientState};
+    /// # use std::time::{Instant, Duration};
+    /// # use std::thread;
+    /// # let mut server = netcode::Server::new("127.0.0.1:0", 0, [0; 32]).unwrap();
+    /// # let token_bytes = server.token(0).generate().unwrap().try_into_bytes().unwrap();
+    /// let mut client = Client::new(&token_bytes).unwrap();
+    /// client.connect();
+    ///
+    /// let start = Instant::now();
+    /// let tick_rate = Duration::from_secs_f64(1.0 / 60.0);
+    /// loop {
+    ///     client.update(start.elapsed().as_secs_f64());
+    ///     if let Some(packet) = client.recv() {
+    ///         // ...
+    ///     }
+    ///     # break;
+    ///     thread::sleep(tick_rate);
+    /// }
+    /// ```
+    pub fn recv(&mut self) -> Option<Vec<u8>> {
+        self.packet_queue.pop_front()
+    }
+    /// Sends a packet to the server.
+    ///
+    /// The provided buffer must be smaller than [`MAX_PACKET_SIZE`](crate::MAX_PACKET_SIZE).
+    pub fn send(&mut self, buf: &[u8]) -> Result<()> {
+        if self.state != ClientState::Connected {
+            return Ok(());
+        }
+        if buf.len() > MAX_PACKET_SIZE {
+            return Err(Error::SizeMismatch(MAX_PACKET_SIZE, buf.len()));
+        }
+        self.send_packet(PayloadPacket::create(buf))?;
+        Ok(())
+    }
+    /// Disconnects the client from the server.
+    ///
+    /// The client will send a number of redundant disconnect packets to the server before transitioning to `Disconnected`.
+    pub fn disconnect(&mut self) -> Result<()> {
+        log::debug!(
+            "client sending {} disconnect packets to server",
+            self.cfg.num_disconnect_packets
+        );
+        for _ in 0..self.cfg.num_disconnect_packets {
+            self.send_packet(DisconnectPacket::create())?;
+        }
+        self.reset(ClientState::Disconnected);
+        Ok(())
+    }
+    /// Gets the local `SocketAddr` that the client is bound to.
+    pub fn addr(&self) -> SocketAddr {
+        self.transceiver.addr()
+    }
+    /// Gets the current state of the client.
+    pub fn state(&self) -> ClientState {
+        self.state
+    }
+    /// Returns true if the client is in an error state.
+    pub fn is_error(&self) -> bool {
+        self.state < ClientState::Disconnected
+    }
+    /// Returns true if the client is in a pending state.
+    pub fn is_pending(&self) -> bool {
+        self.state == ClientState::SendingConnectionRequest
+            || self.state == ClientState::SendingChallengeResponse
+    }
+    /// Returns true if the client is connected to a server.
+    pub fn is_connected(&self) -> bool {
+        self.state == ClientState::Connected
+    }
+    /// Returns true if the client is disconnected from the server.
+    pub fn is_disconnected(&self) -> bool {
+        self.state == ClientState::Disconnected
+    }
 }
 
 #[cfg(test)]
@@ -615,6 +648,7 @@ mod tests {
                 replay_protection: ReplayProtection::new(),
                 should_disconnect: false,
                 should_disconnect_state: ClientState::Disconnected,
+                packet_queue: VecDeque::new(),
                 cfg: ClientConfig::default(),
             })
         }
@@ -667,26 +701,5 @@ mod tests {
                 InvalidTokenError::InvalidIpAddressType(3)
             ))
         ));
-    }
-    #[test]
-    fn connect_token_expired() {
-        let mut time = 0.0;
-
-        let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, [0; 32])
-            .expire_seconds(1)
-            .generate()
-            .unwrap()
-            .try_into_bytes()
-            .unwrap();
-
-        let mut client = Client::new(&token_bytes).unwrap();
-
-        client.connect();
-        time += 1.1;
-
-        client.update(time);
-
-        assert!(client.is_error());
-        assert!(client.state() == ClientState::ConnectTokenExpired);
     }
 }

@@ -6,7 +6,8 @@ use crate::{
     crypto::{self, Key},
     error::Error,
     free_list::{FreeList, FreeListIter},
-    CONNECTION_TIMEOUT_SEC, NETCODE_VERSION, PRIVATE_KEY_SIZE, USER_DATA_SIZE,
+    CONNECTION_TIMEOUT_SEC, CONNECT_TOKEN_BYTES, NETCODE_VERSION, PRIVATE_KEY_BYTES,
+    USER_DATA_BYTES,
 };
 
 use std::{
@@ -136,7 +137,7 @@ pub struct ConnectTokenPrivate {
     pub server_addresses: AddressList,
     pub client_to_server_key: Key,
     pub server_to_client_key: Key,
-    pub user_data: [u8; USER_DATA_SIZE],
+    pub user_data: [u8; USER_DATA_BYTES],
 }
 
 impl ConnectTokenPrivate {
@@ -202,13 +203,13 @@ impl Bytes for ConnectTokenPrivate {
         let server_addresses =
             AddressList::read_from(reader).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        let mut client_to_server_key = [0; PRIVATE_KEY_SIZE];
+        let mut client_to_server_key = [0; PRIVATE_KEY_BYTES];
         reader.read_exact(&mut client_to_server_key)?;
 
-        let mut server_to_client_key = [0; PRIVATE_KEY_SIZE];
+        let mut server_to_client_key = [0; PRIVATE_KEY_BYTES];
         reader.read_exact(&mut server_to_client_key)?;
 
-        let mut user_data = [0; USER_DATA_SIZE];
+        let mut user_data = [0; USER_DATA_BYTES];
         reader.read_exact(&mut user_data)?;
 
         Ok(Self {
@@ -224,7 +225,7 @@ impl Bytes for ConnectTokenPrivate {
 
 pub struct ChallengeToken {
     pub client_id: u64,
-    pub user_data: [u8; USER_DATA_SIZE],
+    pub user_data: [u8; USER_DATA_BYTES],
 }
 
 impl ChallengeToken {
@@ -249,7 +250,7 @@ impl ChallengeToken {
 }
 
 impl Bytes for ChallengeToken {
-    const SIZE: usize = size_of::<u64>() + USER_DATA_SIZE;
+    const SIZE: usize = size_of::<u64>() + USER_DATA_BYTES;
     type Error = io::Error;
     fn write_to(&self, buf: &mut impl io::Write) -> Result<(), io::Error> {
         buf.write_u64::<LittleEndian>(self.client_id)?;
@@ -259,7 +260,7 @@ impl Bytes for ChallengeToken {
 
     fn read_from(reader: &mut impl byteorder::ReadBytesExt) -> Result<Self, io::Error> {
         let client_id = reader.read_u64::<LittleEndian>()?;
-        let mut user_data = [0; USER_DATA_SIZE];
+        let mut user_data = [0; USER_DATA_BYTES];
         reader.read_exact(&mut user_data)?;
         Ok(Self {
             client_id,
@@ -268,7 +269,7 @@ impl Bytes for ChallengeToken {
     }
 }
 
-/// The connect token contains all the information required for a client to connect to a server.
+/// A token containing all the information required for a client to connect to a server.
 ///
 /// The token should be provided to the client by some out-of-band method, such as a web service or a game server browser. <br>
 /// See netcode's upstream [specification](https://github.com/networkprotocol/netcode/blob/master/STANDARD.md) for more details.
@@ -278,7 +279,7 @@ impl Bytes for ChallengeToken {
 /// use netcode::ConnectToken;
 ///
 /// // mandatory fields
-/// let server_address = "127.0.0.1:0"; // the server's public address (can also be multiple addresses)
+/// let server_address = "example.com:5000"; // the server's public address (can also be multiple addresses)
 /// let private_key = netcode::generate_key(); // 32-byte private key, used to encrypt the token
 /// let protocol_id = 0x11223344; // must match the server's protocol id - unique to your app/game
 /// let client_id = 123; // globally unique identifier for an authenticated client
@@ -287,7 +288,7 @@ impl Bytes for ChallengeToken {
 /// let nonce = 0; // starts at zero (default) and should increase with each connect token generated
 /// let expire_seconds = -1; // defaults to 30 seconds, negative for no expiry
 /// let timeout_seconds = -1; // defaults to 15 seconds, negative for no timeout
-/// let user_data = [0u8; 256]; // custom data
+/// let user_data = [0u8; netcode::USER_DATA_BYTES]; // custom data
 ///
 /// let connect_token = ConnectToken::build(server_address, protocol_id, client_id, private_key)
 ///     .nonce(nonce)
@@ -299,7 +300,7 @@ impl Bytes for ChallengeToken {
 ///
 /// // Serialize the connect token to a 2048-byte array
 /// let token_bytes = connect_token.try_into_bytes().unwrap();
-/// assert_eq!(token_bytes.len(), 2048);
+/// assert_eq!(token_bytes.len(), netcode::CONNECT_TOKEN_BYTES);
 /// ```
 ///
 /// Alternatively, you can use [`Server::token`](struct.Server.html#method.token) to generate a connect token from an already existing [`Server`](crate::Server).
@@ -326,7 +327,7 @@ pub struct ConnectTokenBuilder<A: ToSocketAddrs> {
     timeout_seconds: i32,
     public_server_addresses: A,
     internal_server_addresses: Option<AddressList>,
-    user_data: [u8; USER_DATA_SIZE],
+    user_data: [u8; USER_DATA_BYTES],
 }
 
 impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
@@ -340,7 +341,7 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
             timeout_seconds: CONNECTION_TIMEOUT_SEC,
             public_server_addresses: server_addresses,
             internal_server_addresses: None,
-            user_data: [0; USER_DATA_SIZE],
+            user_data: [0; USER_DATA_BYTES],
         }
     }
     /// Sets the time in seconds that the token will be valid for.
@@ -358,7 +359,7 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
         self
     }
     /// Sets the user data that will be added to the token, this can be any data you want.
-    pub fn user_data(mut self, user_data: [u8; USER_DATA_SIZE]) -> Self {
+    pub fn user_data(mut self, user_data: [u8; USER_DATA_BYTES]) -> Self {
         self.user_data = user_data;
         self
     }
@@ -441,8 +442,8 @@ impl ConnectToken {
     }
 
     /// Tries to convert the token into a 2048-byte array.
-    pub fn try_into_bytes(self) -> Result<[u8; Self::SIZE], io::Error> {
-        let mut buf = [0u8; Self::SIZE];
+    pub fn try_into_bytes(self) -> Result<[u8; CONNECT_TOKEN_BYTES], io::Error> {
+        let mut buf = [0u8; CONNECT_TOKEN_BYTES];
         let mut cursor = io::Cursor::new(&mut buf[..]);
         self.write_to(&mut cursor).map_err(|e| {
             io::Error::new(
@@ -497,10 +498,10 @@ impl Bytes for ConnectToken {
 
         let server_addresses = AddressList::read_from(reader)?;
 
-        let mut client_to_server_key = [0; PRIVATE_KEY_SIZE];
+        let mut client_to_server_key = [0; PRIVATE_KEY_BYTES];
         reader.read_exact(&mut client_to_server_key)?;
 
-        let mut server_to_client_key = [0; PRIVATE_KEY_SIZE];
+        let mut server_to_client_key = [0; PRIVATE_KEY_BYTES];
         reader.read_exact(&mut server_to_client_key)?;
 
         Ok(Self {
@@ -538,7 +539,7 @@ mod tests {
             ][..],
         )
         .unwrap();
-        let user_data = [0x11; USER_DATA_SIZE];
+        let user_data = [0x11; USER_DATA_BYTES];
 
         let private_token = ConnectTokenPrivate {
             client_id,
@@ -587,7 +588,7 @@ mod tests {
         let private_key = crypto::generate_key();
         let sequence = 1;
         let client_id = 2;
-        let user_data = [0x11; USER_DATA_SIZE];
+        let user_data = [0x11; USER_DATA_BYTES];
 
         let challenge_token = ChallengeToken {
             client_id,
@@ -620,7 +621,7 @@ mod tests {
             ][..],
         )
         .unwrap();
-        let user_data = [0x11; USER_DATA_SIZE];
+        let user_data = [0x11; USER_DATA_BYTES];
 
         let private_token = ConnectTokenPrivate {
             client_id,
@@ -693,10 +694,10 @@ mod tests {
             server_addresses,
             protocol_id,
             client_id,
-            [0x42; PRIVATE_KEY_SIZE],
+            [0x42; PRIVATE_KEY_BYTES],
         )
         .nonce(nonce)
-        .user_data([0x11; USER_DATA_SIZE])
+        .user_data([0x11; USER_DATA_BYTES])
         .timeout_seconds(5)
         .expire_seconds(6)
         .internal_address_list("0.0.0.0:0")

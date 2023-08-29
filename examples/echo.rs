@@ -44,17 +44,16 @@ fn main() {
     let buf = token.try_into_bytes().unwrap();
 
     let start = Instant::now();
-    let tick_rate = 1.0 / 60.0;
+    let tick_rate = Duration::from_secs_f64(1.0 / 60.0);
 
     let server_thread = thread::spawn(move || loop {
         let now = start.elapsed().as_secs_f64();
         server.update(now);
 
-        let mut packet = [0; 1175];
-        if let Ok(Some((received, client_idx))) = server.recv(&mut packet) {
-            let s = std::str::from_utf8(&packet[..received]).unwrap();
+        while let Some((packet, client_idx)) = server.recv() {
+            let s = std::str::from_utf8(&packet).unwrap();
             println!("server received: {s}",);
-            server.send(&packet[..received], client_idx).unwrap();
+            server.send(&packet, client_idx).unwrap();
         }
         match rx.try_recv() {
             Ok(Event::Connected(idx)) => {
@@ -66,7 +65,7 @@ fn main() {
             }
             Err(_) => continue,
         }
-        thread::sleep(Duration::from_secs_f64(tick_rate));
+        thread::sleep(tick_rate);
     });
 
     let mut client = Client::new(&buf).unwrap();
@@ -77,17 +76,12 @@ fn main() {
         let now = start.elapsed().as_secs_f64();
         client.update(now);
 
-        let mut packet = [0; 1175];
-        let received = client.recv(&mut packet).unwrap();
-        if received > 0 {
-            println!(
-                "echoed back: {}",
-                std::str::from_utf8(&packet[..received]).unwrap()
-            );
+        if let Some(packet) = client.recv() {
+            println!("echoed back: {}", std::str::from_utf8(&packet).unwrap());
         }
         if let ClientState::Connected = client.state() {
-            match rx.recv_timeout(Duration::from_secs_f64(tick_rate)) {
-                Ok(msg) if msg == "dc" => {
+            match rx.recv_timeout(tick_rate) {
+                Ok(msg) if msg == "q" => {
                     client.disconnect().unwrap();
                     break;
                 }
@@ -100,13 +94,13 @@ fn main() {
                 Err(_) => break,
             }
         }
-        thread::sleep(Duration::from_secs_f64(tick_rate));
+        thread::sleep(tick_rate);
     });
 
     for line in io::stdin().lock().lines() {
         let input = line.unwrap();
         tx.send(input.clone()).unwrap();
-        if input == "dc" {
+        if input == "q" {
             break;
         }
     }

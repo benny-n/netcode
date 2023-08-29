@@ -5,7 +5,7 @@ use chacha20poly1305::{
 };
 use std::io;
 
-use crate::{MAC_SIZE, PRIVATE_KEY_SIZE};
+use crate::{MAC_BYTES, PRIVATE_KEY_BYTES};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -19,7 +19,7 @@ pub enum Error {
     GenerateKey(chacha20poly1305::aead::rand_core::Error),
 }
 /// A 32-byte array, used as a key for encrypting and decrypting packets and connect tokens.
-pub type Key = [u8; crate::PRIVATE_KEY_SIZE];
+pub type Key = [u8; crate::PRIVATE_KEY_BYTES];
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Generates a random key for encrypting and decrypting packets and connect tokens.
@@ -35,7 +35,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// assert_eq!(key.len(), 32);
 /// ```
 pub fn generate_key() -> Key {
-    let mut key: Key = [0; PRIVATE_KEY_SIZE];
+    let mut key: Key = [0; PRIVATE_KEY_BYTES];
     OsRng.fill_bytes(&mut key);
     key
 }
@@ -51,7 +51,7 @@ pub fn generate_key() -> Key {
 /// assert_eq!(key.len(), 32);
 /// ```
 pub fn try_generate_key() -> Result<Key> {
-    let mut key: Key = [0; PRIVATE_KEY_SIZE];
+    let mut key: Key = [0; PRIVATE_KEY_BYTES];
     OsRng.try_fill_bytes(&mut key).map_err(Error::GenerateKey)?;
     Ok(key)
 }
@@ -63,7 +63,7 @@ pub fn encrypt(
     key: &Key,
 ) -> Result<()> {
     let size = buffer.len();
-    if size < MAC_SIZE {
+    if size < MAC_BYTES {
         // Should have 16 bytes of extra space for the MAC
         return Err(Error::BufferSizeMismatch);
     }
@@ -72,9 +72,9 @@ pub fn encrypt(
     let mac = ChaCha20Poly1305::new(key.into()).encrypt_in_place_detached(
         &final_nonce.into(),
         associated_data.unwrap_or_default(),
-        &mut buffer[..size - MAC_SIZE],
+        &mut buffer[..size - MAC_BYTES],
     )?;
-    buffer[size - MAC_SIZE..].copy_from_slice(mac.as_ref());
+    buffer[size - MAC_BYTES..].copy_from_slice(mac.as_ref());
     Ok(())
 }
 
@@ -84,13 +84,13 @@ pub fn decrypt(
     nonce: u64,
     key: &Key,
 ) -> Result<()> {
-    if buffer.len() < MAC_SIZE {
+    if buffer.len() < MAC_BYTES {
         // Should already include the MAC
         return Err(Error::BufferSizeMismatch);
     }
     let mut final_nonce = [0; 12];
     io::Cursor::new(&mut final_nonce[4..]).write_u64::<LittleEndian>(nonce)?;
-    let (buffer, mac) = buffer.split_at_mut(buffer.len() - MAC_SIZE);
+    let (buffer, mac) = buffer.split_at_mut(buffer.len() - MAC_BYTES);
     ChaCha20Poly1305::new(key.into()).decrypt_in_place_detached(
         &final_nonce.into(),
         associated_data.unwrap_or_default(),
@@ -115,13 +115,13 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_zero_sized_buffer() {
-        let mut buffer = [0u8; MAC_SIZE]; // 16 bytes is the minimum size, which our actual buffer is empty
+        let mut buffer = [0u8; MAC_BYTES]; // 16 bytes is the minimum size, which our actual buffer is empty
         let nonce = 0;
         let key = generate_key();
         encrypt(&mut buffer, None, nonce, &key).unwrap();
 
         // The buffer should have been modified
-        assert_ne!(buffer, [0u8; MAC_SIZE]);
+        assert_ne!(buffer, [0u8; MAC_BYTES]);
 
         decrypt(&mut buffer, None, nonce, &key).unwrap();
     }
