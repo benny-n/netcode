@@ -279,7 +279,7 @@ impl Bytes for ChallengeToken {
 /// use netcode::ConnectToken;
 ///
 /// // mandatory fields
-/// let server_address = "example.com:5000"; // the server's public address (can also be multiple addresses)
+/// let server_address = "crates.io:12345"; // the server's public address (can also be multiple addresses)
 /// let private_key = netcode::generate_key(); // 32-byte private key, used to encrypt the token
 /// let protocol_id = 0x11223344; // must match the server's protocol id - unique to your app/game
 /// let client_id = 123; // globally unique identifier for an authenticated client
@@ -378,7 +378,7 @@ impl<A: ToSocketAddrs> ConnectTokenBuilder<A> {
     ///
     /// This is useful for when you bind your server to a local address that is not accessible from the internet,
     /// but you want to provide a public address that is accessible to the client.
-    pub fn internal_address_list(mut self, internal_addresses: A) -> Result<Self, Error> {
+    pub fn internal_addresses(mut self, internal_addresses: A) -> Result<Self, Error> {
         self.internal_server_addresses = Some(AddressList::new(internal_addresses)?);
         Ok(self)
     }
@@ -700,7 +700,7 @@ mod tests {
         .user_data([0x11; USER_DATA_BYTES])
         .timeout_seconds(5)
         .expire_seconds(6)
-        .internal_address_list("0.0.0.0:0")
+        .internal_addresses("0.0.0.0:0")
         .expect("failed to parse address")
         .generate()
         .unwrap();

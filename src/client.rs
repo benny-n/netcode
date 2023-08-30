@@ -630,7 +630,7 @@ mod tests {
     use crate::{InvalidTokenError, NETCODE_VERSION};
     use std::io::Write;
     impl Client<NetworkSimulator> {
-        pub fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
+        pub(crate) fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
             Ok(Self {
                 transceiver: sim,
                 state: ClientState::Disconnected,
