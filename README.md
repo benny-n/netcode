@@ -5,7 +5,7 @@
     <a href="https://github.com/benny-n/netcode/actions/workflows/ci.yml">
       <img alt="ci" src="https://github.com/benny-n/netcode/actions/workflows/ci.yml/badge.svg"/>
     </a>
-    <a href="https://github.com/benny-n/netcode/blob/master/LICENSE">
+    <a href="https://github.com/benny-n/netcode/blob/main/LICENSE">
       <img alt="license" src="https://img.shields.io/github/license/benny-n/netcode"/>
     </a>
     <!-- <a href="https://crates.io/crates/netcode">
