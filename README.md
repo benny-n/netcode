@@ -24,20 +24,20 @@ network protocol created by [Glenn Fiedler](https://gafferongames.com).
 
 > `netcode` is a simple connection based client/server protocol built on top of UDP.
 
-See the official upstream [specification](https://github.com/networkprotocol/netcode/blob/v1.1/STANDARD.md) to learn more about how the protocol works.
+See the official upstream [specification](https://github.com/networkprotocol/netcode/blob/v1.2.1/STANDARD.md) to learn more about how the protocol works.
 
 ## Install
 
 Add the following to your `Cargo.toml` file:
 
 ```toml
-netcode = { git = "https://github.com/benny-n/netcode", tag = "v1.1.0" }
+netcode = { git = "https://github.com/benny-n/netcode", tag = "v1.2.0" }
 ```
 
 Or alternatively, you can run the following command:
 
 ```bash
-cargo add --git https://github.com/benny-n/netcode --tag v1.1.0
+cargo add --git https://github.com/benny-n/netcode --tag v1.2.0
 ```
 
 ## Examples
