@@ -1,20 +1,21 @@
-<h1 align="center">
-  <a href="https://github.com/networkprotocol/netcode"><code>netcode</code></a> rust implementation
-
-  <a href="https://github.com/benny-n/netcode/actions/workflows/ci.yml">
-    <img alt="ci" src="https://github.com/benny-n/netcode/actions/workflows/ci.yml/badge.svg"/>
-  </a>
-  <a href="https://github.com/benny-n/netcode/blob/master/LICENSE">
-    <img alt="license" src="https://img.shields.io/github/license/benny-n/netcode"/>
-  </a>
-  <!-- <a href="https://crates.io/crates/netcode">
-    <img alt="crate" src="https://img.shields.io/crates/v/netcode"/>
-  </a> -->
-</h1>
-
 <div align="center">
-  <img src="./demo.gif" alt="demo">
+  <h1>
+    <a href="https://github.com/networkprotocol/netcode"><code>netcode</code></a> rust implementation
+    <br>
+    <a href="https://github.com/benny-n/netcode/actions/workflows/ci.yml">
+      <img alt="ci" src="https://github.com/benny-n/netcode/actions/workflows/ci.yml/badge.svg"/>
+    </a>
+    <a href="https://github.com/benny-n/netcode/blob/master/LICENSE">
+      <img alt="license" src="https://img.shields.io/github/license/benny-n/netcode"/>
+    </a>
+    <!-- <a href="https://crates.io/crates/netcode">
+      <img alt="crate" src="https://img.shields.io/crates/v/netcode"/>
+    </a> -->
+  </h1>
+
 </div>
+
+<img src="./demo.gif" alt="demo">
 
 ## Protocol
 
