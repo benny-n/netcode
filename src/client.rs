@@ -624,11 +624,14 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
 #[cfg(test)]
 mod tests {
     use byteorder::{LittleEndian, WriteBytesExt};
+    use chacha20poly1305::XNonce;
 
     use super::*;
     use crate::simulator::NetworkSimulator;
+    use crate::token::ConnectTokenPrivate;
     use crate::{InvalidTokenError, NETCODE_VERSION};
     use std::io::Write;
+    use std::mem::size_of;
     impl Client<NetworkSimulator> {
         pub(crate) fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
             Ok(Self {
@@ -689,8 +692,8 @@ mod tests {
         cursor.write_u64::<LittleEndian>(0).unwrap(); // protocol id
         cursor.write_u64::<LittleEndian>(0).unwrap(); // create timestamp
         cursor.write_u64::<LittleEndian>(0).unwrap(); // expire timestamp
-        cursor.write_u64::<LittleEndian>(0).unwrap(); // nonce
-        cursor.write_all(&[0; 1024]).unwrap(); // private data
+        cursor.write_all(&[0; size_of::<XNonce>()]).unwrap(); // nonce
+        cursor.write_all(&[0; ConnectTokenPrivate::SIZE]).unwrap(); // private data
         cursor.write_i32::<LittleEndian>(0).unwrap(); // timeout
         cursor.write_u32::<LittleEndian>(1).unwrap(); // num server addresses
         cursor.write_u8(3).unwrap(); // INVALID server address type!

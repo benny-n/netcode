@@ -142,4 +142,4 @@ pub const CONNECT_TOKEN_BYTES: usize = 2048;
 /// The maximum size of a packet in bytes.
 pub const MAX_PACKET_SIZE: usize = 1200;
 /// The version of the netcode protocol implemented by this crate.
-pub const NETCODE_VERSION: &[u8; 13] = b"NETCODE 1.01\0";
+pub const NETCODE_VERSION: &[u8; 13] = b"NETCODE 1.02\0";
