@@ -132,6 +132,7 @@ pub use crate::crypto::{generate_key, try_generate_key, Key};
 pub use crate::error::{Error, Result};
 pub use crate::server::{ClientId, ClientIndex, Server, ServerConfig};
 pub use crate::token::{ConnectToken, ConnectTokenBuilder, InvalidTokenError};
+pub use crate::transceiver::Transceiver;
 
 /// The size of a private key in bytes.
 pub const PRIVATE_KEY_BYTES: usize = 32;

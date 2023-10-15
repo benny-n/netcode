@@ -709,6 +709,28 @@ impl<T: Transceiver, S> Server<T, S> {
         }
         Ok(())
     }
+    pub fn with_config_and_transceiver(
+        protocol_id: u64,
+        private_key: Key,
+        cfg: ServerConfig<S>,
+        trx: T,
+    ) -> Result<Self> {
+        let server = Server {
+            transceiver: trx,
+            time: 0.0,
+            private_key,
+            protocol_id,
+            sequence: 1 << 63,
+            token_sequence: 0,
+            challenge_sequence: 0,
+            challenge_key: crypto::generate_key(),
+            conn_cache: ConnectionCache::new(0.0),
+            token_entries: TokenEntries::new(),
+            cfg,
+        };
+        log::info!("server started on {}", server.addr());
+        Ok(server)
+    }
     /// Updates the server.
     ///
     /// * Updates the server's elapsed time.

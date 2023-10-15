@@ -202,8 +202,8 @@ pub struct Client<T: Transceiver, Ctx = ()> {
     cfg: ClientConfig<Ctx>,
 }
 
-impl<Ctx> Client<NetcodeSocket, Ctx> {
-    fn from_token(token_bytes: &[u8], cfg: ClientConfig<Ctx>) -> Result<Self> {
+impl<Trx: Transceiver, Ctx> Client<Trx, Ctx> {
+    fn from_token(token_bytes: &[u8], trx: Trx, cfg: ClientConfig<Ctx>) -> Result<Self> {
         if token_bytes.len() != ConnectToken::SIZE {
             return Err(Error::SizeMismatch(ConnectToken::SIZE, token_bytes.len()));
         }
@@ -217,12 +217,9 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
                 return Err(Error::InvalidToken(err));
             }
         };
+        log::info!("client started on {}", trx.addr());
         Ok(Self {
-            transceiver: NetcodeSocket::new(
-                (Ipv4Addr::UNSPECIFIED, 0),
-                SEND_BUF_SIZE,
-                RECV_BUF_SIZE,
-            )?,
+            transceiver: trx,
             state: ClientState::Disconnected,
             time: 0.0,
             start_time: 0.0,
@@ -261,9 +258,9 @@ impl Client<NetcodeSocket> {
     /// let mut client = Client::new(&token_bytes).unwrap();
     /// ```
     pub fn new(token_bytes: &[u8]) -> Result<Self> {
-        let client = Client::from_token(token_bytes, ClientConfig::default())?;
-        log::info!("client started on {}", client.transceiver.addr());
-        Ok(client)
+        let netcode_sock =
+            NetcodeSocket::new((Ipv4Addr::UNSPECIFIED, 0), SEND_BUF_SIZE, RECV_BUF_SIZE)?;
+        Client::from_token(token_bytes, netcode_sock, ClientConfig::default())
     }
 }
 
@@ -290,9 +287,9 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     /// let mut client = Client::with_config(&token_bytes, cfg).unwrap();
     /// ```
     pub fn with_config(token_bytes: &[u8], cfg: ClientConfig<Ctx>) -> Result<Self> {
-        let client = Client::from_token(token_bytes, cfg)?;
-        log::info!("client started on {}", client.transceiver.addr());
-        Ok(client)
+        let netcode_sock =
+            NetcodeSocket::new((Ipv4Addr::UNSPECIFIED, 0), SEND_BUF_SIZE, RECV_BUF_SIZE)?;
+        Client::from_token(token_bytes, netcode_sock, cfg)
     }
 }
 
@@ -302,6 +299,15 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         | 1 << Packet::KEEP_ALIVE
         | 1 << Packet::PAYLOAD
         | 1 << Packet::DISCONNECT;
+
+    pub fn with_config_and_transceiver(
+        token_bytes: &[u8],
+        cfg: ClientConfig<Ctx>,
+        trx: T,
+    ) -> Result<Self> {
+        Client::from_token(token_bytes, trx, cfg)
+    }
+
     fn set_state(&mut self, state: ClientState) {
         log::debug!("client state changing from {:?} to {:?}", self.state, state);
         if let Some(ref mut cb) = self.cfg.on_state_change {
