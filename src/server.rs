@@ -356,7 +356,7 @@ impl Server<NetcodeSocket> {
             sequence: 1 << 63,
             token_sequence: 0,
             challenge_sequence: 0,
-            challenge_key: crypto::generate_key(),
+            challenge_key: crypto::try_generate_key()?,
             conn_cache: ConnectionCache::new(0.0),
             token_entries: TokenEntries::new(),
             cfg: ServerConfig::default(),
@@ -398,7 +398,7 @@ impl<Ctx> Server<NetcodeSocket, Ctx> {
             sequence: 1 << 63,
             token_sequence: 0,
             challenge_sequence: 0,
-            challenge_key: crypto::generate_key(),
+            challenge_key: crypto::try_generate_key()?,
             conn_cache: ConnectionCache::new(0.0),
             token_entries: TokenEntries::new(),
             cfg,
@@ -709,6 +709,35 @@ impl<T: Transceiver, S> Server<T, S> {
         }
         Ok(())
     }
+    /// Creates a new server instance with the given configuration and transceiver.
+    ///
+    /// This is useful if you want to use a custom transceiver implementation,
+    /// in any other case you should use [`Server::new`](Server::new) or [`Server::with_config`](Server::with_config).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use netcode::{Server, ServerConfig, Transceiver};
+    ///
+    /// struct MyTransceiver {
+    ///    // ...
+    /// };
+    ///
+    /// impl Transceiver for MyTransceiver {
+    ///    // ...
+    ///    # type IntoError = std::io::Error;
+    ///    # fn addr(&self) -> std::net::SocketAddr { unimplemented!() }
+    ///    # fn send(&self, buf: &[u8], addr: std::net::SocketAddr) -> std::io::Result<usize> { unimplemented!() }
+    ///    # fn recv(&self, buf: &mut [u8]) -> std::io::Result<Option<(usize, std::net::SocketAddr)>> { unimplemented!() }
+    /// }
+    ///
+    /// let protocol_id = 0x1122334455667788;
+    /// let private_key = netcode::generate_key();
+    /// let cfg = ServerConfig::default();
+    /// let trx = MyTransceiver { /* .. */ };
+    ///
+    /// let server = Server::with_config_and_transceiver(protocol_id, private_key, cfg, trx).unwrap();
+    /// ```
     pub fn with_config_and_transceiver(
         protocol_id: u64,
         private_key: Key,
@@ -723,7 +752,7 @@ impl<T: Transceiver, S> Server<T, S> {
             sequence: 1 << 63,
             token_sequence: 0,
             challenge_sequence: 0,
-            challenge_key: crypto::generate_key(),
+            challenge_key: crypto::try_generate_key()?,
             conn_cache: ConnectionCache::new(0.0),
             token_entries: TokenEntries::new(),
             cfg,
@@ -923,21 +952,9 @@ pub mod tests {
             sim: NetworkSimulator,
             private_key: Option<Key>,
         ) -> Result<Self> {
-            let time = 0.0;
-            log::info!("server started on {}", sim.addr());
-            let server = Server {
-                transceiver: sim,
-                time,
-                private_key: private_key.unwrap_or(crypto::generate_key()),
-                protocol_id: 0,
-                sequence: 1 << 63,
-                token_sequence: 0,
-                challenge_sequence: 0,
-                challenge_key: crypto::generate_key(),
-                conn_cache: ConnectionCache::new(time),
-                token_entries: TokenEntries::new(),
-                cfg: ServerConfig::default(),
-            };
+            let private_key = private_key.unwrap_or(crypto::generate_key());
+            let cfg = ServerConfig::default();
+            let server = Server::with_config_and_transceiver(0, private_key, cfg, sim)?;
             Ok(server)
         }
         pub(crate) fn iter_clients(&self) -> impl Iterator<Item = ClientIndex> + '_ {

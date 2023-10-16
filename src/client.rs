@@ -203,7 +203,7 @@ pub struct Client<T: Transceiver, Ctx = ()> {
 }
 
 impl<Trx: Transceiver, Ctx> Client<Trx, Ctx> {
-    fn from_token(token_bytes: &[u8], trx: Trx, cfg: ClientConfig<Ctx>) -> Result<Self> {
+    fn from_token(token_bytes: &[u8], cfg: ClientConfig<Ctx>, trx: Trx) -> Result<Self> {
         if token_bytes.len() != ConnectToken::SIZE {
             return Err(Error::SizeMismatch(ConnectToken::SIZE, token_bytes.len()));
         }
@@ -260,7 +260,7 @@ impl Client<NetcodeSocket> {
     pub fn new(token_bytes: &[u8]) -> Result<Self> {
         let netcode_sock =
             NetcodeSocket::new((Ipv4Addr::UNSPECIFIED, 0), SEND_BUF_SIZE, RECV_BUF_SIZE)?;
-        Client::from_token(token_bytes, netcode_sock, ClientConfig::default())
+        Client::from_token(token_bytes, ClientConfig::default(), netcode_sock)
     }
 }
 
@@ -289,7 +289,7 @@ impl<Ctx> Client<NetcodeSocket, Ctx> {
     pub fn with_config(token_bytes: &[u8], cfg: ClientConfig<Ctx>) -> Result<Self> {
         let netcode_sock =
             NetcodeSocket::new((Ipv4Addr::UNSPECIFIED, 0), SEND_BUF_SIZE, RECV_BUF_SIZE)?;
-        Client::from_token(token_bytes, netcode_sock, cfg)
+        Client::from_token(token_bytes, cfg, netcode_sock)
     }
 }
 
@@ -299,14 +299,6 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         | 1 << Packet::KEEP_ALIVE
         | 1 << Packet::PAYLOAD
         | 1 << Packet::DISCONNECT;
-
-    pub fn with_config_and_transceiver(
-        token_bytes: &[u8],
-        cfg: ClientConfig<Ctx>,
-        trx: T,
-    ) -> Result<Self> {
-        Client::from_token(token_bytes, trx, cfg)
-    }
 
     fn set_state(&mut self, state: ClientState) {
         log::debug!("client state changing from {:?} to {:?}", self.state, state);
@@ -504,6 +496,46 @@ impl<T: Transceiver, Ctx> Client<T, Ctx> {
         }
         Ok(())
     }
+    /// Creates a new client instance with the given configuration and transceiver.
+    ///
+    /// This is useful if you want to use a custom transceiver implementation,
+    /// in any other case you should use [`Client::new`](Client::new) or [`Client::with_config`](Client::with_config).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use netcode::{Client, ClientConfig, ConnectToken, Transceiver};
+    ///
+    /// struct MyTransceiver {
+    ///    // ...
+    /// };
+    ///
+    /// impl Transceiver for MyTransceiver {
+    ///    // ...
+    ///    # type IntoError = std::io::Error;
+    ///    # fn addr(&self) -> std::net::SocketAddr { unimplemented!() }
+    ///    # fn send(&self, buf: &[u8], addr: std::net::SocketAddr) -> std::io::Result<usize> { unimplemented!() }
+    ///    # fn recv(&self, buf: &mut [u8]) -> std::io::Result<Option<(usize, std::net::SocketAddr)>> { unimplemented!() }
+    /// }
+    ///
+    /// # let private_key = netcode::generate_key();
+    /// # let token_bytes = ConnectToken::build("127.0.0.1:0", 0, 0, private_key)
+    /// #    .generate()
+    /// #    .unwrap()
+    /// #    .try_into_bytes()
+    /// #    .unwrap();
+    /// let cfg = ClientConfig::default();
+    /// let trx = MyTransceiver { /* .. */ };
+    ///
+    /// let client = Client::with_config_and_transceiver(&token_bytes, cfg, trx).unwrap();
+    /// ```
+    pub fn with_config_and_transceiver(
+        token_bytes: &[u8],
+        cfg: ClientConfig<Ctx>,
+        trx: T,
+    ) -> Result<Self> {
+        Client::from_token(token_bytes, cfg, trx)
+    }
     /// Prepares the client to connect to the server.
     ///
     /// This function does not perform any IO, it only readies the client to send/receive packets on the next call to [`update`](Client::update). <br>
@@ -640,26 +672,11 @@ mod tests {
     use std::mem::size_of;
     impl Client<NetworkSimulator> {
         pub(crate) fn with_simulator(token: ConnectToken, sim: NetworkSimulator) -> Result<Self> {
-            Ok(Self {
-                transceiver: sim,
-                state: ClientState::Disconnected,
-                time: 0.0,
-                start_time: 0.0,
-                last_send_time: f64::NEG_INFINITY,
-                last_receive_time: f64::NEG_INFINITY,
-                server_addr_idx: 0,
-                sequence: 0,
-                challenge_token_sequence: 0,
-                challenge_token_data: [0u8; ChallengeToken::SIZE],
-                client_index: 0,
-                max_clients: 0,
-                token,
-                replay_protection: ReplayProtection::new(),
-                should_disconnect: false,
-                should_disconnect_state: ClientState::Disconnected,
-                packet_queue: VecDeque::new(),
-                cfg: ClientConfig::default(),
-            })
+            Client::with_config_and_transceiver(
+                &token.try_into_bytes()?,
+                ClientConfig::default(),
+                sim,
+            )
         }
     }
 
