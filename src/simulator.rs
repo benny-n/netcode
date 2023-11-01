@@ -68,13 +68,13 @@ fn rand_float(range: std::ops::Range<f64>) -> f64 {
 }
 
 impl Transceiver for NetworkSimulator {
-    type Error = io::Error;
+    type IntoError = io::Error;
 
     fn addr(&self) -> SocketAddr {
         SocketAddr::from((Ipv4Addr::LOCALHOST, self.port))
     }
 
-    fn recv(&self, buf: &mut [u8]) -> Result<Option<(usize, SocketAddr)>, Self::Error> {
+    fn recv(&self, buf: &mut [u8]) -> Result<Option<(usize, SocketAddr)>, Self::IntoError> {
         // routing table -> given an addr of self, look through the table for the receiving endpoint
         // if no entry is found, return early
         let table = self.routing_table.borrow();
@@ -94,7 +94,7 @@ impl Transceiver for NetworkSimulator {
         }
         Ok(None)
     }
-    fn send(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Self::Error> {
+    fn send(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, Self::IntoError> {
         // routing table -> given an addr, look through the table for the sending endpoint
         // if no entry is found, return early
         let table = self.routing_table.borrow();

@@ -35,7 +35,7 @@ impl NetcodeSocket {
 }
 
 impl Transceiver for NetcodeSocket {
-    type Error = Error;
+    type IntoError = Error;
 
     fn addr(&self) -> SocketAddr {
         self.0.local_addr().expect("address should be bound")

@@ -22,7 +22,7 @@
 //!
 //! 1. The `Client` authenticates with the web backend service. (e.g., by OAuth or some other means)
 //! 2. The authenticated `Client` requests a connection token from the web backend.
-//! 3. The web backend generates a [`ConnectToken`](ConnectToken) and sends it to the `Client`. (e.g., as a JSON response)
+//! 3. The web backend generates a [`ConnectToken`] and sends it to the `Client`. (e.g., as a JSON response)
 //! 4. The `Client` uses the token to connect to a dedicated `Server`.
 //! 5. The `Server` makes sure the token is valid and allows the `Client` to connect.
 //! 6. The `Client` and `Server` can now exchange encrypted and signed UDP packets.
@@ -39,7 +39,7 @@
 //!  * Provide the address you intend to bind to.
 //!  * Provide the protocol id - a `u64` that uniquely identifies your app.
 //!  * Provide a private key - a `u8` array of length 32. If you don't have one, you can generate one with `netcode::generate_key()`.
-//!  * Optionally provide a [`ServerConfig`](ServerConfig) - a struct that allows you to customize the server's behavior.
+//!  * Optionally provide a [`ServerConfig`] - a struct that allows you to customize the server's behavior.
 //!
 //! ```
 //! use std::{thread, time::{Instant, Duration}};
@@ -72,8 +72,8 @@
 //! send updates to the server, and maintain a stable connection.
 //!
 //! To create a client:
-//!  * Provide a **connect token** - a `u8` array of length 2048 serialized from a [`ConnectToken`](ConnectToken).
-//!  * Optionally provide a [`ClientConfig`](ClientConfig) - a struct that allows you to customize the client's behavior.
+//!  * Provide a **connect token** - a `u8` array of length 2048 serialized from a [`ConnectToken`].
+//!  * Optionally provide a [`ClientConfig`] - a struct that allows you to customize the client's behavior.
 //!
 //! ```
 //! use std::{thread, time::{Instant, Duration}};
@@ -132,6 +132,7 @@ pub use crate::crypto::{generate_key, try_generate_key, Key};
 pub use crate::error::{Error, Result};
 pub use crate::server::{ClientId, ClientIndex, Server, ServerConfig};
 pub use crate::token::{ConnectToken, ConnectTokenBuilder, InvalidTokenError};
+pub use crate::transceiver::Transceiver;
 
 /// The size of a private key in bytes.
 pub const PRIVATE_KEY_BYTES: usize = 32;
