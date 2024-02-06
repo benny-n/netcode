@@ -8,9 +8,9 @@
     <a href="https://github.com/benny-n/netcode/blob/main/LICENSE">
       <img alt="license" src="https://img.shields.io/github/license/benny-n/netcode"/>
     </a>
-    <!-- <a href="https://crates.io/crates/netcode">
-      <img alt="crate" src="https://img.shields.io/crates/v/netcode"/>
-    </a> -->
+    <a href="https://crates.io/crates/netcode-rs">
+      <img alt="crate" src="https://img.shields.io/crates/v/netcode-rs"/>
+    </a>
   </h1>
 
 </div>
@@ -28,17 +28,25 @@ See the official upstream [specification](https://github.com/networkprotocol/net
 
 ## Install
 
-Add the following to your `Cargo.toml` file:
-
-```toml
-netcode = { git = "https://github.com/benny-n/netcode", tag = "v1.2.0" }
-```
-
-Or alternatively, you can run the following command:
+Run the following Cargo command in your project directory:
 
 ```bash
-cargo add --git https://github.com/benny-n/netcode --tag v1.2.0
+cargo add netcode-rs
 ```
+
+Or add the following line to your Cargo.toml:
+
+```toml
+[dependencies]
+netcode-rs = "1.3.0"
+```
+
+**NOTE:** While the crate name is `netcode-rs`, the library name is actually `netcode`. <br>
+This means that even though you used `cargo add netcode-rs` to add the dependency, you will need to write `use netcode::*` (and _not_ `use netcode_rs::*`) to use it. <br>
+
+I know this is confusing, and I know that [`-rs` crate names are frowned upon](https://rust-lang.github.io/api-guidelines/naming.html#:~:text=Crate%20names%20should%20not%20use,remind%20users%20of%20this%20constantly.). <br>
+Unfortunately the original `netcode` crate is unmaintained and its maintainer is unreachable, so I could not get the ownership for the crate name.
+I didn't want to use names like `netcode2` to avoid confusion with the netcode protocol versions.
 
 ## Examples
 
