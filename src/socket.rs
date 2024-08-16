@@ -11,7 +11,29 @@ pub struct Error(#[from] std::io::Error);
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct NetcodeSocket(pub UdpSocket);
+/// A wrapper around `UdpSocket` that implements the `Transceiver` trait for use in the netcode protocol.
+///
+/// `NetcodeSocket` is responsible for creating and managing a UDP socket, handling non-blocking
+/// send and receive operations, and providing the local address of the socket.
+///
+/// # Note
+///
+/// This is a lower-level component and should not be used directly unless you have a specific use case.
+/// For most applications, it is recommended to use higher-level abstractions such as `Client::new` or
+/// `Client::with_config` to create and manage clients.
+///
+/// # Example
+///
+/// ```
+/// use netcode::NetcodeSocket;
+/// use std::net::SocketAddr;
+///
+/// let addr = "127.0.0.1:41235";
+/// let send_buf_size = 256 * 1024;
+/// let recv_buf_size = 256 * 1024;
+/// let socket = NetcodeSocket::new(addr, send_buf_size, recv_buf_size).unwrap();
+/// ```
+pub struct NetcodeSocket(UdpSocket);
 
 impl NetcodeSocket {
     pub fn new(

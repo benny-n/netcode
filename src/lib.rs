@@ -127,11 +127,11 @@ pub(crate) const MAX_PKT_BUF_SIZE: usize = 1300;
 pub(crate) const CONNECTION_TIMEOUT_SEC: i32 = 15;
 pub(crate) const PACKET_SEND_RATE_SEC: f64 = 1.0 / 10.0;
 
-pub use crate::socket::NetcodeSocket;
 pub use crate::client::{Client, ClientConfig, ClientState};
 pub use crate::crypto::{generate_key, try_generate_key, Key};
 pub use crate::error::{Error, Result};
 pub use crate::server::{ClientId, ClientIndex, Server, ServerConfig};
+pub use crate::socket::NetcodeSocket;
 pub use crate::token::{ConnectToken, ConnectTokenBuilder, InvalidTokenError};
 pub use crate::transceiver::Transceiver;
 
