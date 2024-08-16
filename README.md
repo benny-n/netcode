@@ -38,7 +38,7 @@ Or add the following line to your Cargo.toml:
 
 ```toml
 [dependencies]
-netcode-rs = "1.3.0"
+netcode-rs = "1.4.0"
 ```
 
 **NOTE:** While the crate name is `netcode-rs`, the library name is actually `netcode`. <br>
